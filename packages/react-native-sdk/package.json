@@ -1,0 +1,43 @@
+{
+  "name": "@keewano/react-native-sdk",
+  "version": "0.1.0-91",
+  "description": "Bare React Native SDK for Keewano AI Analyst.",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "build:prod": "tsc -p tsconfig.prod.json",
+    "clean": "rimraf dist"
+  },
+  "dependencies": {
+    "@keewano/core": "*"
+  },
+  "peerDependencies": {
+    "react": ">=18.0.0",
+    "react-native": ">=0.71.0",
+    "react-native-fs": ">=2.20.0"
+  },
+  "keywords": [
+    "keewano",
+    "analytics",
+    "react-native",
+    "sdk"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "@types/react": "^18.3.31"
+  }
+}

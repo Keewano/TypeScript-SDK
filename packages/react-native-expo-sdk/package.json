@@ -1,0 +1,52 @@
+{
+  "name": "@keewano/react-native-expo-sdk",
+  "version": "0.1.0-91",
+  "description": "Expo SDK for Keewano AI Analyst (Expo-specific adapters and integrations).",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "build:prod": "tsc -p tsconfig.prod.json",
+    "clean": "rimraf dist"
+  },
+  "dependencies": {
+    "@keewano/core": "*",
+    "@keewano/react-native-sdk": "*"
+  },
+  "peerDependencies": {
+    "expo": ">=52.0.0",
+    "expo-constants": ">=14.0.0",
+    "expo-file-system": ">=15.0.0",
+    "react": ">=18.0.0",
+    "react-native": ">=0.71.0"
+  },
+  "peerDependenciesMeta": {
+    "expo": {
+      "optional": true
+    }
+  },
+  "keywords": [
+    "keewano",
+    "analytics",
+    "react-native",
+    "expo",
+    "sdk"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "@types/react": "^18.3.31"
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://keewano.com/schemas/custom-event.schema.json",
+  "title": "Keewano custom event definition",
+  "description": "One event per file. Filename basename (without .json) must equal `n`.",
+  "type": "object",
+  "required": ["n", "t"],
+  "additionalProperties": false,
+  "properties": {
+    "n": {
+      "type": "string",
+      "description": "Event name. PascalCase ASCII identifier; capped at 128 characters so the wire varint length stays small and pathological inputs cannot OOM the gzip pass.",
+      "pattern": "^[A-Z][A-Za-z0-9_]*$",
+      "maxLength": 128
+    },
+    "t": {
+      "type": "integer",
+      "description": "CustomEventType enum value: 0 None, 1 String, 2 UnsignedInt, 3 Bool, 4 Timestamp, 5 UnsignedShortVec2, 6 PriceInUSDCents.",
+      "minimum": 0,
+      "maximum": 6
+    }
+  }
+}

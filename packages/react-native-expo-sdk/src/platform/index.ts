@@ -1,0 +1,1 @@
+export { expoPlatformAdapter } from './expoPlatformAdapter';

@@ -1,0 +1,100 @@
+/**
+ * Predefined event IDs sent on the wire.
+ *
+ * The numeric gaps (27, 31, 41, 44-49, 51-53, 55-56, 61-63, 68-70) are
+ * preserved intentionally: they represent IDs that are not currently
+ * assigned on the server, and widening them later would break wire
+ * compatibility.
+ *
+ * A subset of IDs (`GENUINITY_CHECK`, `GPU_TYPE`, `VRAM_SIZE`,
+ * `LOW_MEM_WARNING`) is present in the enum but is never emitted by
+ * this SDK because React Native has no equivalent JS API to source the
+ * data. They are kept here so future native modules or platform
+ * adapters can fire them without ID conflicts.
+ *
+ * Each ID is serialized as a uint16 LE on the wire, immediately after
+ * the event timestamp.
+ *
+ * @example
+ * ```ts
+ * import { KEvents } from '@keewano/core';
+ *
+ * KEvents.BUTTON_CLICK;        // 20
+ * KEvents.APP_LAUNCH;          // 2
+ * KEvents.AD_OFFERED_TYPE;     // 79
+ * ```
+ */
+
+/**
+ * Wire-protocol event IDs.
+ *
+ * Values are uint16 on the wire. Range used: 2-79 inclusive, with gaps.
+ */
+const KEvents = {
+  APP_LAUNCH: 2,
+  SESSION_START: 3,
+  SESSION_END: 4,
+  GENUINITY_CHECK: 5,
+  DEVICE_TYPE: 6,
+  GPU_TYPE: 7,
+  OS: 8,
+  RAM_SIZE: 9,
+  VRAM_SIZE: 10,
+  SCREEN_RESOLUTION: 11,
+  SYSTEM_LANG: 12,
+  ERROR_MSG: 13,
+  LOW_MEM_WARNING: 14,
+  INSTALL_CAMPAIGN: 15,
+  SCENE_LOADED: 16,
+  SCENE_UNLOADED: 17,
+  DEEP_LINK_ACTIVATED: 18,
+  INTERNET_DISCONNECTED: 19,
+  BUTTON_CLICK: 20,
+  EMPTY_SPACE_CLICK: 21,
+  WINDOW_OPEN: 22,
+  WINDOW_CLOSE: 23,
+  ITEMS_EXCHANGE: 24,
+  DAY_IN_GAME_STARTED: 25,
+  COUNTRY: 26,
+  APP_PAUSE: 28,
+  APP_RESUME: 29,
+  INTERNET_CONNECTED: 30,
+  PURCHASE_PRODUCT_ID: 32,
+  PURCHASE_PRODUCT_PRICE_USD_CENTS: 33,
+  PLATFORM: 34,
+  PURCHASE_TIMESTAMP: 35,
+  AB_TEST_ASSIGNMENT: 36,
+  ITEMS_RESET: 37,
+  USER_ID_ASSIGNED: 38,
+  POINTER1_DOWN: 39,
+  POINTER1_UP: 40,
+  BATCH_DROPPED: 42,
+  GAME_LANG: 43,
+  ONBOARDING_MILESTONE: 50,
+  ITEMS_PURCHASED_GRANT: 54,
+  AD_REVENUE_TIMESTAMP: 57,
+  AD_REVENUE_PLACEMENT: 58,
+  AD_REVENUE_USD_CENTS: 59,
+  ITEMS_AD_GRANTED: 60,
+  SUBSCRIPTION_REVENUE_TIMESTAMP: 64,
+  SUBSCRIPTION_REVENUE_PACKAGE: 65,
+  SUBSCRIPTION_REVENUE_USD_CENTS: 66,
+  ITEMS_SUBSCRIPTION_GRANTED: 67,
+  PURCHASE_LOCAL_CURRENCY_NAME: 71,
+  PURCHASE_LOCAL_CURRENCY_AMOUNT: 72,
+  AD_REVENUE_LOCAL_CURRENCY_NAME: 73,
+  AD_REVENUE_LOCAL_CURRENCY_AMOUNT: 74,
+  SUBSCRIPTION_LOCAL_CURRENCY_NAME: 75,
+  SUBSCRIPTION_LOCAL_CURRENCY_AMOUNT: 76,
+  PRE_SDK_REGISTRATION_DATE: 77,
+  AD_OFFERED_PLACEMENT: 78,
+  AD_OFFERED_TYPE: 79,
+} as const;
+
+/**
+ * Union of all valid `KEvents` numeric values.
+ */
+type KEvent = (typeof KEvents)[keyof typeof KEvents];
+
+export type { KEvent };
+export { KEvents };

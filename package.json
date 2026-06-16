@@ -1,0 +1,44 @@
+{
+  "name": "keewano-ts-workspace",
+  "version": "0.0.0",
+  "private": true,
+  "description": "React Native + Expo SDK for Keewano AI Analyst - workspace root",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "pretypecheck": "npm run build -w @keewano/core && npm run build -w @keewano/react-native-sdk",
+    "typecheck": "tsc --noEmit -p packages/core/tsconfig.json && tsc --noEmit -p packages/react-native-sdk/tsconfig.json && tsc --noEmit -p packages/react-native-expo-sdk/tsconfig.json && tsc --noEmit -p packages/codegen/tsconfig.json",
+    "build": "npm run build -w @keewano/core && npm run build -w @keewano/react-native-sdk && npm run build -w @keewano/react-native-expo-sdk && npm run build -w @keewano/codegen",
+    "build:prod": "npm run build:prod -w @keewano/core && npm run build:prod -w @keewano/react-native-sdk && npm run build:prod -w @keewano/react-native-expo-sdk && npm run build:prod -w @keewano/codegen",
+    "format": "prettier --check packages",
+    "format:fix": "prettier --write packages",
+    "lint": "eslint packages --ext .ts,.tsx",
+    "lint:fix": "eslint packages --ext .ts,.tsx --fix",
+    "clean": "npm run clean --workspaces --if-present",
+    "test": "jest",
+    "test:cov": "jest --ci --coverage"
+  },
+  "devDependencies": {
+    "@types/jest": "29.5.14",
+    "@typescript-eslint/eslint-plugin": "8.46.4",
+    "@typescript-eslint/parser": "8.46.4",
+    "eslint": "8.57.1",
+    "eslint-plugin-sonarjs": "4.0.3",
+    "jest": "29.7.0",
+    "jest-junit": "17.0.0",
+    "prettier": "3.8.3",
+    "rimraf": "5.0.10",
+    "ts-jest": "29.4.9",
+    "typescript": "5.9.3"
+  },
+  "overrides": {
+    "zod@3.25.76": "4.4.3",
+    "uuid@7.0.3": "11.1.1",
+    "ws": "^8.21.0",
+    "xcode": {
+      "uuid": "11.1.1"
+    }
+  },
+  "license": "MIT"
+}

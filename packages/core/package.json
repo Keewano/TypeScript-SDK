@@ -1,0 +1,32 @@
+{
+  "name": "@keewano/core",
+  "version": "0.1.0-91",
+  "description": "Platform-agnostic core for Keewano SDK (encoding, dispatcher, transport, identity, types).",
+  "main": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "default": "./dist/src/index.js",
+      "require": "./dist/src/index.js",
+      "import": "./dist/src/index.js",
+      "types": "./dist/src/index.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "build:prod": "tsc -p tsconfig.prod.json",
+    "clean": "rimraf dist"
+  },
+  "keywords": [
+    "analytics",
+    "keewano",
+    "sdk",
+    "core"
+  ],
+  "license": "MIT"
+}
