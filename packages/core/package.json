@@ -1,7 +1,7 @@
 {
   "name": "@keewano/core",
-  "version": "0.1.0-91",
-  "description": "Platform-agnostic core for Keewano SDK (encoding, dispatcher, transport, identity, types).",
+  "version": "1.0.0-0",
+  "description": "Platform-agnostic core for Keewano TypeScript SDK (encoding, dispatcher, transport, identity, types).",
   "main": "./dist/src/index.js",
   "types": "./dist/src/index.d.ts",
   "exports": {

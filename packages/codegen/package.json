@@ -1,6 +1,6 @@
 {
   "name": "@keewano/codegen",
-  "version": "0.1.0-91",
+  "version": "1.0.0-0",
   "description": "Keewano custom-events codegen CLI: turns per-event JSON definitions into a type-safe generated TypeScript module.",
   "main": "./dist/src/index.js",
   "types": "./dist/src/index.d.ts",

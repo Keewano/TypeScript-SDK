@@ -1,6 +1,6 @@
 {
   "name": "keewano-ts-workspace",
-  "version": "0.0.0",
+  "version": "1.0.0-0",
   "private": true,
   "description": "React Native + Expo SDK for Keewano AI Analyst - workspace root",
   "workspaces": [

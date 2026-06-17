@@ -1,53 +1,49 @@
-# keewano-react-native-sdk
+# Keewano TypeScript SDK
 
-React Native + Expo SDK for Keewano AI Analyst.
+Behavioural analytics for Keewano AI Analyst, built on a platform-agnostic core. Today it
+ships the React Native and Expo SDKs; the same core is built to be reused by future
+platform SDKs such as Node.js or Web.
 
-> **Beta**. API may change before 1.0.0.
+## Documentation
 
-## Packages
+Full documentation: [`docs/`](docs/README.md)
 
-| Package | Purpose |
-|---|---|
-| [`@keewano/core`](packages/core/README.md) | Platform-agnostic core (encoding, dispatcher, transport, identity, types). Internal dep, install transitively. |
-| [`@keewano/react-native-sdk`](packages/react-native-sdk/README.md) | Bare React Native SDK. Public facade, auto-trackers, `useKeewanoNavigation` for `@react-navigation/native`. |
-| [`@keewano/react-native-expo-sdk`](packages/react-native-expo-sdk/README.md) | Expo SDK. Re-exports the bare RN surface plus Expo storage / platform adapters and `useKeewanoNavigation` for `expo-router`. |
-| [`@keewano/codegen`](packages/codegen/README.md) | Build-time CLI that turns per-event JSON files into a typed `customEventSet` module the SDK ships to the server. |
+**Start here**
 
-End-users install one runtime package plus the codegen tool:
+- [Getting Started](docs/getting-started.md) - install, init, and first events
+- [Configuration](docs/configuration.md) - every `init` option and lifecycle helpers
+- [Automatic Tracking](docs/automatic-tracking.md) - what is captured with no extra code
+- [Event Types](docs/event-types.md) - the full map of events
 
-```bash
-# Bare React Native
-npm install @keewano/react-native-sdk
-npm install --save-dev @keewano/codegen
+**Reporting events**
 
-# Expo
-npm install @keewano/react-native-expo-sdk
-npm install --save-dev @keewano/codegen
-```
+- [Windows and Buttons](docs/windows.md) - button clicks, windows, and popups
+- [In-App Purchases](docs/in-app-purchases.md) - purchases and granted items
+- [Ad Revenue](docs/ad-revenue.md) - ad offers, revenue, and rewarded items
+- [Subscription Revenue](docs/subscription-revenue.md) - recurring revenue and perks
+- [Item Economy](docs/item-economy.md) - exchanges and inventory resets
+- [Tutorial Tracking](docs/onboarding.md) - onboarding milestones
+- [A/B Tests](docs/ab-testing.md) - experiment group assignment
+- [Marketing Campaign](docs/install-campaign.md) - install attribution and game language
+- [Custom Events](docs/custom-events.md) - your own typed events
+- [Codegen Reference](docs/codegen.md) - the custom-events CLI
 
-## Quick start
+**Data and operations**
 
-```ts
-import { Keewano } from '@keewano/react-native-sdk'; // or '@keewano/react-native-expo-sdk'
+- [Data Privacy](docs/privacy.md) - the consent gate and what is stored on device
+- [Offline Analytics](docs/offline.md) - no-loss offline behaviour
+- [Data Format](docs/data-format.md) - the binary wire format
 
-await Keewano.init({ apiKey: 'YOUR_API_KEY' });
+**Integration**
 
-Keewano.reportButtonClick('Play');
-Keewano.reportSceneLoaded('MainMenu');
-Keewano.setUserId('player-42');
-```
+- [Example Integration](docs/example-integration.md) - a step-by-step walkthrough
+- [Integration Testing](docs/integration-testing.md) - verify it works
+- [Existing App Integration](docs/existing-app-integration.md) - add it to a shipped game
 
-For typed custom events, declare per-event JSON files, run `npx keewano-codegen --input <dir>`, and pass the produced `customEventSet` into `Keewano.init`. See the [codegen README](packages/codegen/README.md) for the JSON schema, CLI flags, and generated output format.
+**Packages and contributing**
 
-## Development
-
-```bash
-npm install
-npm run lint
-npm run typecheck
-npm test
-npm run build
-```
+- [Packages](docs/README.md#packages) - the monorepo packages and how to install them
+- [Development](docs/development.md) - build and test the SDK locally
 
 ## License
 

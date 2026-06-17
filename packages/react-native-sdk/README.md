@@ -1,181 +1,27 @@
 # @keewano/react-native-sdk
 
-React Native SDK for Keewano AI Analyst (Bare React Native).
+Bare React Native SDK for Keewano AI Analyst: the public `Keewano` facade, the automatic trackers, and `useKeewanoNavigation` for `@react-navigation/native`.
 
-> Beta. API may change before 1.0.0.
+## Documentation
 
-For Expo apps install [`@keewano/react-native-expo-sdk`](../react-native-expo-sdk/README.md) instead; it re-exports this package's API and adds Expo-specific adapters.
+See the [documentation](../../docs/README.md) for install, configuration, and the full API. For Expo apps use [`@keewano/react-native-expo-sdk`](../react-native-expo-sdk/README.md) instead.
 
-## Install
+## Installation
 
 ```bash
-npm install @keewano/react-native-sdk
+npm install @keewano/react-native-sdk react-native-fs
 ```
 
-Peer dependencies your host app must provide:
-
-- `react`
-- `react-native`
-- `react-native-fs` (used by the default storage adapter)
-- `@react-native-community/netinfo` (optional; required only when you opt in to network tracking)
+`react-native-fs` is the storage peer; run its autolinking / pod-install step once.
 
 ## Quick start
 
-```ts
+```typescript
 import { Keewano } from '@keewano/react-native-sdk';
 
 await Keewano.init({ apiKey: 'YOUR_API_KEY' });
-
 Keewano.reportButtonClick('Play');
-Keewano.reportSceneLoaded('MainMenu');
-Keewano.setUserId('player-42');
 ```
-
-The init call kicks off the background send loop and emits the canonical session-frame burst (APP_LAUNCH, PLATFORM, DEVICE_TYPE, OS, RAM_SIZE, SCREEN_RESOLUTION, SYSTEM_LANG). Subsequent `report*` calls accumulate into a batch that ships once the dispatcher hits its wake threshold or the 30 second idle timer fires.
-
-## Configuration
-
-`Keewano.init` accepts an options object:
-
-| Field                        | Type                                           | Default                | Meaning                                                                                                                                                                                                                                                                                 |
-| ---------------------------- | ---------------------------------------------- | ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `apiKey`                     | `string`                                       | required               | Project secret sent as `K-Token`.                                                                                                                                                                                                                                                       |
-| `requirePlayerConsent`       | `boolean`                                      | `false`                | When `true`, the initial consent state is `Pending` and events are queued until the host calls `setUserConsent`.                                                                                                                                                                        |
-| `endpoint`                   | `string`                                       | production URL         | Override the ingress base URL (staging, self-host).                                                                                                                                                                                                                                     |
-| `getExtraHeaders`            | `() => Record<string, string> \| Promise<...>` | none                   | Provider for extra HTTP headers added to every request (for example an `Authorization` header to clear an auth proxy in front of a staging endpoint). Resolved once per send-loop pass so a short-lived token can refresh. Reserved `K-*` / `Content-*` headers always win a collision. |
-| `storage`                    | `StorageAdapter`                               | `BareRNStorageAdapter` | Plug a custom storage backend.                                                                                                                                                                                                                                                          |
-| `platform`                   | `PlatformAdapter`                              | bare RN defaults       | Override the metadata source for the initial event burst.                                                                                                                                                                                                                               |
-| `customEventSet`             | `CustomEventSet`                               | none                   | Generated by [`@keewano/codegen`](../codegen/README.md). Activates server-side schema registration on the first ship pass.                                                                                                                                                              |
-| `plugins`                    | `KeewanoTracker[]`                             | `[]`                   | Extra trackers attached after the built-ins.                                                                                                                                                                                                                                            |
-| `disableButtonTracking`      | `boolean`                                      | `false`                | Skip the `Pressable` / `Touchable*` monkey-patch.                                                                                                                                                                                                                                       |
-| `disableAppStateTracking`    | `boolean`                                      | `false`                | Skip the AppState listener.                                                                                                                                                                                                                                                             |
-| `disableBackHandlerTracking` | `boolean`                                      | `false`                | Skip the Android BackHandler listener.                                                                                                                                                                                                                                                  |
-| `disableLinkingTracking`     | `boolean`                                      | `false`                | Skip the Linking listener.                                                                                                                                                                                                                                                              |
-| `disableErrorTracking`       | `boolean`                                      | `false`                | Skip the global ErrorUtils chain.                                                                                                                                                                                                                                                       |
-| `enableNetworkTracking`      | `boolean`                                      | `false`                | Opt in to the NetInfo listener (network tracking is off by default; needs the `@react-native-community/netinfo` peer).                                                                                                                                                                  |
-
-## Public API
-
-### Lifecycle
-
-- `Keewano.init(config)` - boot the SDK. Idempotent: a second call logs a warning and resolves to the first call's promise.
-- `Keewano.shutdown()` - abort the send loop, await its exit, flush the in-memory batch to disk under the live consent gate, detach trackers, clear the runtime singleton.
-
-### Identity and consent
-
-- `Keewano.setUserId(id: string | bigint)` - associate a developer-supplied user identity with the session.
-- `Keewano.setUserConsent(granted: boolean)` - transition the consent state machine. Only valid from `Pending`.
-- `Keewano.markAsTestUser(name: string)` - persist a QA tester name; subsequent batches carry it in the `K-Tester` header.
-- `Keewano.getInstallId(): Promise<string>` - lowercase-hyphenated install GUID.
-
-### Reports
-
-UI:
-
-- `Keewano.reportButtonClick(name)`
-- `Keewano.reportWindowOpen(name)` / `Keewano.reportWindowClose(name)`
-- `Keewano.reportSceneLoaded(name)` / `Keewano.reportSceneUnloaded(name)`
-- `Keewano.reportOnboardingMilestone(name)`
-- `Keewano.reportABTestGroupAssignment({ testName, group })`
-
-Monetization:
-
-- `Keewano.reportInAppPurchase(args)` - USD-cents and localized-currency variants via a discriminated union.
-- `Keewano.reportInAppPurchaseItemsGranted(args)`
-- `Keewano.reportAdOffered(args)` / `Keewano.reportAdRevenue(args)` / `Keewano.reportAdItemsGranted(args)`
-- `Keewano.reportSubscriptionRevenue(args)` / `Keewano.reportSubscriptionItemsGranted(args)`
-- `Keewano.reportItemsExchange(args)` / `Keewano.reportItemsReset(args)`
-
-Session:
-
-- `Keewano.reportInstallCampaign(name)`
-- `Keewano.reportGameLanguage(lang)`
-- `Keewano.logError(error)`
-- `Keewano.reportUserRegisteredBeforeSDKIntegration(registeredAt: Date)`
-
-## Auto-tracking
-
-The built-in trackers are attached automatically by `init` and detached by `shutdown`. Opt out individually via the `disable*Tracking` flags:
-
-| Tracker              | What it does                                                                                                                                                                 | Wire event                                     |
-| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------- |
-| `PressableTracker`   | Monkey-patches `Pressable.render` and the three `Touchable*` components. The wrapped node still renders normally; a button-click event fires alongside the host's `onPress`. | `BUTTON_CLICK`                                 |
-| `AppStateTracker`    | Coalesces iOS multi-transition storms (`inactive`-then-`background`) so foreground / background flips fire exactly once.                                                     | `APP_PAUSE` / `APP_RESUME`                     |
-| `BackHandlerTracker` | Android only. Observe-only listener that returns `false` so the host navigation still runs.                                                                                  | `BUTTON_CLICK("Android Device Back Button")`   |
-| `LinkingTracker`     | Subscribes to `Linking.addEventListener('url', ...)`. Skips the launch URL to avoid double-counting.                                                                         | `DEEP_LINK_ACTIVATED`                          |
-| `ErrorTracker`       | Chains in front of the existing `ErrorUtils` handler so Sentry / Bugsnag installs survive. Restores the prior handler on detach.                                             | `ERROR_MSG`                                    |
-| `NetworkTracker`     | Optional. Lazy-requires `@react-native-community/netinfo` and degrades to a no-op when the peer is absent.                                                                   | `INTERNET_CONNECTED` / `INTERNET_DISCONNECTED` |
-
-## Manual escape hatches
-
-- `<KeewanoPressable pressable={Pressable} buttonName="Play">{children}</KeewanoPressable>` works even when `disableButtonTracking: true` is set.
-- The `Keewano.report*` methods are always available and let you instrument anything the auto-trackers cannot reach (custom UI stacks, gesture handlers, server-pushed actions).
-
-## Custom trackers (plugins)
-
-Implement `KeewanoTracker`:
-
-```ts
-import type { KeewanoTracker } from '@keewano/react-native-sdk';
-
-class MyTracker implements KeewanoTracker {
-  readonly name = 'MyTracker';
-
-  attach(): () => void {
-    const sub = someEventSource.subscribe(() => {
-      Keewano.reportButtonClick('MyTrackerEvent');
-    });
-    return () => sub.remove();
-  }
-}
-
-await Keewano.init({ apiKey: '...', plugins: [new MyTracker()] });
-```
-
-The lifecycle manager calls `attach()` once at init and the returned detach function once at shutdown. Plugins run after the built-in trackers.
-
-## Navigation
-
-`useKeewanoNavigation(navigationRef)` is the recommended `@react-navigation/native` integration. It emits `SCENE_LOADED` on first non-empty route and `SCENE_UNLOADED(previous)` + `SCENE_LOADED(next)` on every subsequent change; empty / blank route names are no-op.
-
-```tsx
-import { NavigationContainer } from '@react-navigation/native';
-import { useKeewanoNavigation } from '@keewano/react-native-sdk';
-
-function App() {
-  const navigationRef = useRef(null);
-  useKeewanoNavigation(navigationRef);
-  return <NavigationContainer ref={navigationRef}>{/* ... */}</NavigationContainer>;
-}
-```
-
-For Expo Router use [`@keewano/react-native-expo-sdk`](../react-native-expo-sdk/README.md).
-
-## Custom events (typed)
-
-Define your event shapes as JSON, run [`@keewano/codegen`](../codegen/README.md) to produce a typed `customEventSet`, and pass it to `init`:
-
-```ts
-import { customEventSet, reportBestScore } from './keewano-custom-events/keewano-events.generated';
-await Keewano.init({ apiKey: '...', customEventSet });
-
-reportBestScore(12345);
-```
-
-The send loop probes `GET /custom` once per session with the schema `version` and uploads via `POST /custom` if the server replies `204`.
-
-## Platform metadata
-
-The default `PlatformAdapter` reads only what pure React Native exposes, so the initial-event burst carries platform-token granularity rather than exact hardware strings:
-
-| Event         | Default value                                                    | Note                                                                                       |
-| ------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
-| `PLATFORM`    | `Platform.OS` (`ios` / `android` / `web`)                        | OS token, not a runtime name.                                                              |
-| `OS`          | `Platform.Version` (e.g. `16.1`, or Android API level `33`)      | Bare version; no OS-name prefix. Android reports the API level, not the marketing version. |
-| `DEVICE_TYPE` | coarse class (`phone` / `tablet` / `tv` / `desktop` / `unknown`) | React Native exposes no concrete device-model string.                                      |
-| `SYSTEM_LANG` | IETF tag (e.g. `en-US`)                                          | Region included.                                                                           |
-
-For exact device model, OS name, or other richer metadata, supply a custom `PlatformAdapter` to `Keewano.init({ platform })` backed by `react-native-device-info` (or `expo-device` / `expo-application` on Expo).
 
 ## License
 

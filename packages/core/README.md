@@ -1,13 +1,17 @@
 # @keewano/core
 
-Platform-agnostic core for the Keewano SDK. Byte encoding primitives for the wire protocol, event dispatcher, HTTP transport, identity/consent, types and enums.
+Platform-agnostic core for the Keewano TypeScript SDK: wire-protocol encoding, the event dispatcher, HTTP transport, and identity and consent.
 
-> Beta. API may change before 1.0.0.
+## Documentation
 
-Consumers should not depend on this package directly - install one of the platform-specific packages instead:
+See the [documentation](../../docs/README.md). Install a platform package instead of this one - [`@keewano/react-native-sdk`](../react-native-sdk/README.md) (bare React Native) or [`@keewano/react-native-expo-sdk`](../react-native-expo-sdk/README.md) (Expo).
 
-- `@keewano/react-native-sdk` - Bare React Native
-- `@keewano/react-native-expo-sdk` - Expo
+## What's inside
+
+The shared, platform-neutral logic every Keewano TypeScript SDK builds on: byte encoding and binary
+streams, the event dispatcher with batching and persistence, the HTTP transport, the
+identity and consent state machine, and the `StorageAdapter` interface each platform
+package implements. You consume it through a platform package, never directly.
 
 ## License
 

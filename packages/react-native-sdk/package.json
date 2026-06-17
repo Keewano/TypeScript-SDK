@@ -1,6 +1,6 @@
 {
   "name": "@keewano/react-native-sdk",
-  "version": "0.1.0-91",
+  "version": "1.0.0-0",
   "description": "Bare React Native SDK for Keewano AI Analyst.",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

@@ -1,5 +1,5 @@
 /**
- * `@keewano/core` - the platform-agnostic core of the Keewano SDK.
+ * `@keewano/core` - the platform-agnostic core of the Keewano TypeScript SDK.
  *
  * Aggregates every public primitive of the package: wire encoding,
  * event entities, the dispatcher, the storage-adapter contract, batch

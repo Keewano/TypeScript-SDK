@@ -1,6 +1,6 @@
 {
   "name": "@keewano/react-native-expo-sdk",
-  "version": "0.1.0-91",
+  "version": "1.0.0-0",
   "description": "Expo SDK for Keewano AI Analyst (Expo-specific adapters and integrations).",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
