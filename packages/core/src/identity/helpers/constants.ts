@@ -11,7 +11,7 @@
 const IDS_FILENAME = 'Keewano_Ids';
 
 /**
- * Total on-disk size of the identifiers record. Two 16-byte GUIDs
+ * Total on-disk size of the identifiers record. Two 16-byte UUIDs
  * concatenated back-to-back.
  */
 const IDS_FILE_SIZE = 32;

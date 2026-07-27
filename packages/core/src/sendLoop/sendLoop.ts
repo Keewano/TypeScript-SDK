@@ -21,24 +21,24 @@ import type {
   LoopContext,
   PersistAccumulatedBatchArgs,
   RunSendLoopArgs,
-  SaveAllSubBatchesArgs,
-  TrySaveSubBatchArgs,
+  SaveSlicesArgs,
   WaitForSignalOrTimeoutArgs,
 } from './types/sendLoop';
+import type { Codec } from '../codec/types/codec';
 
-import {
-  consentGate,
-  deleteBatch,
-  getCustomEventMapStatus,
-  hasControlChar,
-  isByteString,
-  listBatches,
-  loadBatch,
-  reduceStorageSize,
-  registerCustomEventMap,
-  saveBatch,
-  sendBatch,
-} from '@keewano/core';
+import { BinaryCodec } from '../codec/binaryCodec';
+import { consentGate } from '../consent';
+import { BinaryTransport, getCustomEventMapStatus, registerCustomEventMap } from '../network';
+import { deleteBatch, listBatches, loadBatch, reduceStorageSize, saveBatch } from '../persistence';
+import { hasControlChar, isByteString } from '../validation';
+
+/**
+ * Shared default codec/transport pair: the binary wire format. Both
+ * are stateless, so one instance serves every loop and every
+ * `persistAccumulatedBatch` caller that does not inject its own.
+ */
+const DEFAULT_CODEC: Codec = new BinaryCodec();
+const DEFAULT_TRANSPORT = new BinaryTransport();
 
 /** Idle window between iterations when no dispatcher signal arrives. */
 const DEFAULT_IDLE_MS = 30_000;
@@ -76,9 +76,24 @@ async function runSendLoop(args: RunSendLoopArgs): Promise<void> {
     capBytes: args.capBytes ?? DEFAULT_CAP_BYTES,
     customEventSet: args.customEventSet,
     customEventsRegistered: false,
+    configErrorLogged: false,
     getExtraHeaders: args.getExtraHeaders,
     extraHeaders: {},
+    codec: args.codec ?? DEFAULT_CODEC,
+    transport: args.transport ?? DEFAULT_TRANSPORT,
   };
+  /**
+   * A codec/transport pair that disagree on the wire format would
+   * persist batches one protocol and ship them as another - the
+   * server ingests garbage or rejects forever. Fail loudly at
+   * startup instead; a config bug must not masquerade as a delivery
+   * problem.
+   */
+  if (ctx.codec.id !== ctx.transport.codecId) {
+    throw new Error(
+      `runSendLoop: codec "${ctx.codec.id}" does not match transport "${ctx.transport.codecId}"`,
+    );
+  }
   const idleMs = args.idleMs ?? DEFAULT_IDLE_MS;
 
   while (!ctx.signal.aborted) {
@@ -111,6 +126,7 @@ async function runSendLoop(args: RunSendLoopArgs): Promise<void> {
         storage: ctx.storage,
         dir: ctx.batchesDir,
         capBytes: ctx.capBytes,
+        codec: ctx.codec,
       });
     } catch {
       /** Swallowed; the cap pass retries next iteration. */
@@ -315,38 +331,63 @@ function dropInMemoryBatches(ctx: LoopContext): void {
  *
  * Called from both the send loop (per-iteration tick after wake)
  * and `Keewano.shutdown` (final flush after the loop has aborted).
+ *
+ * @returns `true` when every sealed slice landed on disk OR there was
+ *   nothing to persist; `false` when any slice save failed or the
+ *   swap-recovery path dropped a prior payload. The send loop ignores
+ *   the result (persistence stays best-effort there); a caller that
+ *   promised durability to its host (the Node relay's
+ *   `reportUserBatch`) surfaces `false` as a failure.
  */
-async function persistAccumulatedBatch(args: PersistAccumulatedBatchArgs): Promise<void> {
+async function persistAccumulatedBatch(args: PersistAccumulatedBatchArgs): Promise<boolean> {
   const { storage, dispatcher, dir, allocBatchNum } = args;
+  const codec = args.codec ?? DEFAULT_CODEC;
+  let persisted = true;
   try {
     dispatcher.swapBatches();
   } catch {
     /**
      * The sending slot was non-empty (a prior save threw before
      * `resetForReuse` could run). Reset it ourselves so the loop
-     * keeps moving; the previous payload is lost. The reset is
-     * wrapped because a throw here would re-reject the helper
-     * inside the very path meant to recover from a failed swap -
-     * same best-effort contract as the post-save reset below.
+     * keeps moving; the previous payload is lost, so the result
+     * reports failure even when the retried swap then persists
+     * cleanly. The reset is wrapped because a throw here would
+     * re-reject the helper inside the very path meant to recover
+     * from a failed swap - same best-effort contract as the
+     * post-save reset below.
      */
+    persisted = false;
     try {
       dispatcher.currentSendingBatch.resetForReuse();
     } catch {
-      return;
+      return false;
     }
     try {
       dispatcher.swapBatches();
     } catch {
-      return;
+      return false;
     }
   }
   const sending = dispatcher.currentSendingBatch;
-  if (sending.data.length === 0) {
-    return;
+  if (sending.byteSize() === 0) {
+    return persisted;
   }
-  sending.batchEndTime = Math.floor(Date.now() / 1000);
+  const finalBatchEndTime = Math.floor(Date.now() / 1000);
   try {
-    await saveAllSubBatches({ storage, dir, sending, allocBatchNum });
+    const slices = sending.builder.seal({ finalBatchEndTime });
+    /**
+     * A non-empty batch must seal into at least one non-empty slice;
+     * the built-in binary builder guarantees this structurally, but
+     * `codec` is an injectable seam. A buggy builder returning no (or
+     * hollow) slices would otherwise be reported as success while the
+     * finally-reset drops the accumulated payload - invisible to the
+     * Node relay's durability contract.
+     */
+    if (slices.length === 0 || slices.some((slice) => slice.payload.length === 0)) {
+      return false;
+    }
+    const saved = await saveSlices({ storage, dir, codec, sending, slices, allocBatchNum });
+    persisted = persisted && saved;
   } finally {
     /**
      * Always reset so the next swap is clean. Sub-batches that
@@ -363,11 +404,15 @@ async function persistAccumulatedBatch(args: PersistAccumulatedBatchArgs): Promi
       /** Best-effort cleanup; reset failure must not reject the loop. */
     }
   }
+  return persisted;
 }
 
 /**
  * Loop-tick wrapper around {@link persistAccumulatedBatch}. The loop
- * supplies its own batch-num allocator via `ctx.getNextBatchNum`.
+ * supplies its own batch-num allocator via `ctx.getNextBatchNum` and
+ * deliberately ignores the persist result: the loop's contract is
+ * best-effort, so a failed save is accepted as lost and the next tick
+ * retries against a fresh swap.
  */
 async function persistDispatcherSwap(ctx: LoopContext): Promise<void> {
   await persistAccumulatedBatch({
@@ -375,84 +420,52 @@ async function persistDispatcherSwap(ctx: LoopContext): Promise<void> {
     dispatcher: ctx.dispatcher,
     dir: ctx.batchesDir,
     allocBatchNum: ctx.getNextBatchNum,
+    codec: ctx.codec,
   });
 }
 
 /**
- * Slice the swapped sending batch along its recorded `cutPositions`
- * and save one `.kwub` file per slice. Each slice spans
- * `[lastReadPos, cut.pos)` bytes with `batchStartTime = sliceStart`
- * and `batchEndTime = cut.lastEventTime`; the remainder past the last
- * cut (or the full payload when no cuts were recorded) becomes the
- * tail slice with `batchEndTime` taken from the sending batch's own
- * stamp.
+ * Save one `.kwub` file per sealed slice. The builder's `seal` places
+ * the slice boundaries at whole-event cut points and clamps every
+ * slice interval against backward wall-clock moves, so each slice
+ * arrives here ready to persist as-is; this helper only pairs it
+ * with the sending batch's identity metadata and a fresh `batchNum`.
  *
  * Stops on the first save failure - later slices for that swap are
  * dropped along with the failing one. Best-effort persistence is
  * intentional: the alternative (retry with the same batchNum) would
  * either duplicate or cascade.
+ *
+ * @returns `true` when every slice landed on disk; `false` when a save
+ *   failed (that slice and every later one in the swap are dropped).
  */
-async function saveAllSubBatches(args: SaveAllSubBatchesArgs): Promise<void> {
-  const { storage, dir, sending, allocBatchNum } = args;
-  const payload = sending.data.toBytes();
-  let lastReadPos = 0;
-  let sliceStart = sending.batchStartTime;
-  for (const cut of sending.cutPositions) {
-    if (cut.pos > lastReadPos) {
-      const ok = await trySaveSubBatch({
+async function saveSlices(args: SaveSlicesArgs): Promise<boolean> {
+  const { storage, dir, codec, sending, slices, allocBatchNum } = args;
+  for (const slice of slices) {
+    try {
+      await saveBatch({
         storage,
         dir,
-        sending,
-        data: payload.subarray(lastReadPos, cut.pos),
-        batchStartTime: sliceStart,
-        batchEndTime: cut.lastEventTime,
-        batchNum: allocBatchNum(),
+        codec,
+        batch: {
+          codecId: codec.id,
+          metadata: {
+            userId: sending.userId,
+            dataSessionId: sending.dataSessionId,
+            batchVersion: sending.batchVersion,
+            customEventsVersion: sending.customEventsVersion,
+          },
+          batchNum: allocBatchNum(),
+          batchStartTime: slice.batchStartTime,
+          batchEndTime: slice.batchEndTime,
+          payload: slice.payload,
+        },
       });
-      if (!ok) return;
+    } catch {
+      return false;
     }
-    lastReadPos = cut.pos;
-    sliceStart = cut.lastEventTime;
   }
-  if (lastReadPos < payload.length) {
-    await trySaveSubBatch({
-      storage,
-      dir,
-      sending,
-      data: payload.subarray(lastReadPos),
-      batchStartTime: sliceStart,
-      batchEndTime: sending.batchEndTime,
-      batchNum: allocBatchNum(),
-    });
-  }
-}
-
-/**
- * Best-effort save of one sub-batch slice. Returns `true` on
- * success, `false` on any save error. Single source of truth for the
- * `KBatch` -> `BatchRecord` projection so future wire-shape changes
- * touch one place.
- */
-async function trySaveSubBatch(args: TrySaveSubBatchArgs): Promise<boolean> {
-  const { storage, dir, sending, data, batchStartTime, batchEndTime, batchNum } = args;
-  try {
-    await saveBatch({
-      storage,
-      dir,
-      batch: {
-        batchVersion: sending.batchVersion,
-        userId: sending.userId,
-        dataSessionId: sending.dataSessionId,
-        batchNum,
-        batchStartTime,
-        batchEndTime,
-        customEventsVersion: sending.customEventsVersion,
-        data,
-      },
-    });
-    return true;
-  } catch {
-    return false;
-  }
+  return true;
 }
 
 /**
@@ -503,7 +516,10 @@ async function deleteAllBatches(ctx: LoopContext): Promise<void> {
  * `registerCustomEventMap` are caught here: shutdown's abort signal
  * fires every in-flight `fetch` and we don't want the loop to die.
  * The next iteration short-circuits on `ctx.signal.aborted` before
- * reaching this helper.
+ * reaching this helper. A `TypeError` / `RangeError` is a
+ * configuration bug surfaced by the network validation layer; it is
+ * also caught (files stay on disk) but logged once per loop session
+ * via `logConfigError` so the misconfiguration is visible.
  */
 async function ensureCustomEventsRegistered(ctx: LoopContext): Promise<boolean> {
   if (ctx.customEventSet === undefined) return true;
@@ -517,7 +533,8 @@ async function ensureCustomEventsRegistered(ctx: LoopContext): Promise<boolean> 
       signal: ctx.signal,
       extraHeaders: ctx.extraHeaders,
     });
-  } catch {
+  } catch (error: unknown) {
+    logConfigError(ctx, error);
     return false;
   }
   if (status === 'known') {
@@ -534,7 +551,8 @@ async function ensureCustomEventsRegistered(ctx: LoopContext): Promise<boolean> 
       signal: ctx.signal,
       extraHeaders: ctx.extraHeaders,
     });
-  } catch {
+  } catch (error: unknown) {
+    logConfigError(ctx, error);
     return false;
   }
   if (!posted) return false;
@@ -577,10 +595,17 @@ async function runShipPass(ctx: LoopContext): Promise<void> {
 }
 
 /**
- * Load a single `.kwub`, POST it to `/in`, delete on 2xx. A corrupted
- * file (loadBatch returns null) is treated as already-shipped: it is
- * deleted so the loop does not retry it forever. Network errors and
- * AbortError / TimeoutError leave the file on disk for the next pass.
+ * Load a single `.kwub`, POST it to `/in`, and act on the transport's
+ * typed result: `'ok'` deletes the file, `'retryable'` leaves it on
+ * disk for the next pass, `'fatal'` (the server permanently rejected
+ * the batch; a retry can never succeed) logs the reason, deletes the
+ * file, and lets the pass continue. A corrupted file (loadBatch
+ * returns null) is treated as already-shipped: it is deleted so the
+ * loop does not retry it forever. Network errors and AbortError /
+ * TimeoutError leave the file on disk for the next pass; a
+ * TypeError / RangeError thrown by the transport's validation layer
+ * is a configuration bug and is logged once per loop session (the
+ * file also stays on disk).
  *
  * Every storage operation is wrapped in `try / catch` so a transient
  * read / write failure cannot escape this function and reject the
@@ -599,7 +624,7 @@ async function runShipPass(ctx: LoopContext): Promise<void> {
 async function shipOneBatch(ctx: LoopContext, path: string): Promise<boolean> {
   let record;
   try {
-    record = await loadBatch({ storage: ctx.storage, path });
+    record = await loadBatch({ storage: ctx.storage, path, codec: ctx.codec });
   } catch {
     /** Read failure is transient; leave the file on disk for next iteration. */
     return false;
@@ -630,59 +655,94 @@ async function shipOneBatch(ctx: LoopContext, path: string): Promise<boolean> {
   if (ctx.signal.aborted || readConsentSafely(ctx) !== 'send') {
     return false;
   }
-  let ok = false;
+  let delivered = false;
+  let fatalReason: string | null = null;
   try {
-    ok = await sendBatch({
-      baseUrl: ctx.endpoint,
-      apiKey: ctx.apiKey,
-      batch: {
+    const result = await ctx.transport.send({
+      batch: record,
+      ctx: {
+        endpoint: ctx.endpoint,
+        apiKey: ctx.apiKey,
         installId: ctx.installId,
-        userId: record.userId,
-        dataSessionId: record.dataSessionId,
-        batchNum: record.batchNum,
-        batchStartTime: record.batchStartTime,
-        batchEndTime: record.batchEndTime,
-        batchVersion: record.batchVersion,
-        customEventsVersion: record.customEventsVersion,
-        data: record.data,
+        testUser: ctx.dispatcher.pendingTestUserName,
+        signal: ctx.signal,
+        extraHeaders: ctx.extraHeaders,
       },
-      testUser: ctx.dispatcher.pendingTestUserName,
-      signal: ctx.signal,
-      extraHeaders: ctx.extraHeaders,
     });
-  } catch {
+    if (result.kind === 'ok') delivered = true;
+    if (result.kind === 'fatal') fatalReason = result.reason;
+  } catch (error: unknown) {
     /**
-     * AbortError / TimeoutError re-raised by sendBatch land here.
+     * AbortError / TimeoutError re-raised by the transport land here.
      * The batch stays on disk so the next loop iteration retries it
-     * once the abort / timeout window has cleared.
+     * once the abort / timeout window has cleared. A TypeError /
+     * RangeError is different: the transport's validation layer
+     * throws those deliberately for configuration bugs (malformed
+     * apiKey, bad endpoint, corrupt batch field) that a retry can
+     * never fix. The file still stays on disk, but the bug is logged
+     * once per loop session instead of masquerading as a silent
+     * delivery stall.
      */
+    logConfigError(ctx, error);
   }
-  if (ok) {
+  if (fatalReason !== null) {
+    console.error('Keewano: batch permanently rejected; dropping.', fatalReason);
+    return removeDeliveredBatch(ctx, path);
+  }
+  if (delivered) {
+    return removeDeliveredBatch(ctx, path);
+  }
+  return false;
+}
+
+/**
+ * Delete a batch file the server has settled (accepted with 2xx or
+ * permanently rejected as `fatal`). If the delete fails, leaving the
+ * file intact would re-deliver it on the next ship pass (loadBatch
+ * succeeds -> sendBatch fires -> server-side duplicate, or a fatal
+ * batch re-POSTs forever). Quarantine the file by overwriting it
+ * with zero bytes: next iteration's loadBatch sees an empty payload,
+ * decodeBatch returns null, shipOneBatch routes through the
+ * "corrupted / unreadable" branch (deletes the file, no POST).
+ * reduceStorageSize will eventually clean it up if the next delete
+ * also fails.
+ *
+ * @returns `true` when the file was deleted or quarantined (the pass
+ *   can keep going); `false` when the quarantine write ALSO failed -
+ *   the storage is catastrophically broken, so the caller stops the
+ *   pass and lets the loop's idle backoff kick in instead of
+ *   hammering the broken adapter against the rest of the batch list.
+ */
+async function removeDeliveredBatch(ctx: LoopContext, path: string): Promise<boolean> {
+  try {
+    await deleteBatch({ storage: ctx.storage, path });
+  } catch {
     try {
-      await deleteBatch({ storage: ctx.storage, path });
+      await ctx.storage.writeFile({ path, bytes: new Uint8Array(0) });
     } catch {
-      /**
-       * Server already accepted this batch but the delete failed.
-       * Leaving the file intact would re-deliver it on the next ship
-       * pass (loadBatch succeeds -> sendBatch fires -> server-side
-       * duplicate). Quarantine the file by overwriting it with zero
-       * bytes: next iteration's loadBatch sees an empty payload,
-       * decodeBatch returns null, shipOneBatch routes through the
-       * "corrupted / unreadable" branch (deletes the file, no POST).
-       * reduceStorageSize will eventually clean it up if the next
-       * delete also fails. If the quarantine write ALSO fails the
-       * storage is catastrophically broken; stop the pass so the
-       * loop's idle backoff kicks in instead of hammering the broken
-       * adapter against the rest of the batch list.
-       */
-      try {
-        await ctx.storage.writeFile({ path, bytes: new Uint8Array(0) });
-      } catch {
-        return false;
-      }
+      return false;
     }
   }
-  return ok;
+  return true;
+}
+
+/**
+ * Log a configuration bug once per loop session. The network layer
+ * deliberately surfaces `TypeError` / `RangeError` for misconfigured
+ * input (e.g. an apiKey with surrounding whitespace failing the
+ * header-value check) instead of collapsing them into a retryable
+ * failure; swallowing them silently here would hide the bug forever
+ * while batches pile up on disk. Any other error shape (AbortError,
+ * TimeoutError, transient network throws) stays silent - those are
+ * operational, not configuration. The `configErrorLogged` flag keeps
+ * the log one-shot so a permanent misconfiguration does not spam the
+ * console on every iteration.
+ */
+function logConfigError(ctx: LoopContext, error: unknown): void {
+  if (!(error instanceof TypeError || error instanceof RangeError)) return;
+  if (ctx.configErrorLogged) return;
+  ctx.configErrorLogged = true;
+  console.error('Keewano: delivery disabled by a configuration error; fix the SDK config.', error);
 }
 
 /**
@@ -764,5 +824,4 @@ async function waitForSignalOrTimeout({
   }
 }
 
-export type { PersistAccumulatedBatchArgs, RunSendLoopArgs } from './types/sendLoop';
 export { persistAccumulatedBatch, runSendLoop };

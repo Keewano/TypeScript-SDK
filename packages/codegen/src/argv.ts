@@ -9,12 +9,14 @@ import type { ApplyArgvTokenArgs, ParsedCliArgs, ReadValueArgArgs } from './type
 import { isAbsolute, resolve as resolvePath } from 'node:path';
 
 import { CLI_DEFAULTS } from './defaults';
+import { DEFAULT_TARGET, isEmitTarget } from './emit';
 import { ParseError } from './errors';
 
 function parseArgv(argv: readonly string[]): ParsedCliArgs {
   const args: ParsedCliArgs = {
     input: resolvePath(process.cwd(), CLI_DEFAULTS.INPUT_DIR),
     output: '',
+    target: DEFAULT_TARGET,
     watch: false,
     help: false,
     version: false,
@@ -43,6 +45,14 @@ function applyArgvToken({ args, token, argv, index }: ApplyArgvTokenArgs): numbe
     case '--output':
       args.output = resolveArgPath(readValueArg({ name: '--output', argv, index }));
       return 2;
+    case '--target': {
+      const value = readValueArg({ name: '--target', argv, index });
+      if (!isEmitTarget(value)) {
+        throw new ParseError(`parse: --target must be react-native, expo, or node`);
+      }
+      args.target = value;
+      return 2;
+    }
     case '--watch':
       args.watch = true;
       return 1;

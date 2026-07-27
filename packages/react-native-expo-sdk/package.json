@@ -1,6 +1,6 @@
 {
   "name": "@keewano/react-native-expo-sdk",
-  "version": "1.0.0-0",
+  "version": "1.0.0-41",
   "description": "Expo SDK for Keewano AI Analyst (Expo-specific adapters and integrations).",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -10,7 +10,8 @@
       "import": "./dist/index.js",
       "require": "./dist/index.js",
       "default": "./dist/index.js"
-    }
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "dist",
@@ -45,6 +46,13 @@
     "expo",
     "sdk"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Keewano/TypeScript-SDK.git",
+    "directory": "packages/react-native-expo-sdk"
+  },
+  "homepage": "https://github.com/Keewano/TypeScript-SDK#readme",
+  "bugs": "https://github.com/Keewano/TypeScript-SDK/issues",
   "license": "MIT",
   "devDependencies": {
     "@types/react": "^18.3.31"

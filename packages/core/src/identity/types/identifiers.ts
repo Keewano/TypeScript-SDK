@@ -3,12 +3,12 @@
  * `installId` followed by 16 bytes `userId`, both in Microsoft
  * mixed-endian.
  *
- * installId - 16-byte mixed-endian GUID for the persistent install
- *   identity. Generated once at first launch via `newGuid`, then
+ * installId - 16-byte mixed-endian UUID for the persistent install
+ *   identity. Generated once at first launch via `newUuid`, then
  *   kept across app restarts. Never all-zero (corruption guard: a
  *   stored value that reads as all zeros is treated as missing and
  *   regenerated).
- * userId - 16-byte mixed-endian GUID for the developer-assigned
+ * userId - 16-byte mixed-endian UUID for the developer-assigned
  *   user. Zero-filled until the host calls `setUserId`; the
  *   zero value is a legitimate "not set" sentinel, not a
  *   corruption signal.

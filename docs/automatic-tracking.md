@@ -7,9 +7,9 @@ lists what is tracked and how to turn any of it off.
 
 ## Session start
 
-On every launch the SDK emits a session-context burst: app launch, platform, OS,
-RAM, screen resolution, and system language. This is what the backend expects at the
-start of each session, so it always fires.
+On every launch the SDK emits a session-context burst: app launch, platform, device
+type, OS, RAM, screen resolution, and system language. This is what the backend
+expects at the start of each session, so it always fires.
 
 > [!NOTE]
 > These read only what pure React Native exposes, so they carry token-level
@@ -62,12 +62,11 @@ function RootLayout() {
 
 ```typescript
 // React Navigation - @keewano/react-native-sdk
-import { useRef } from 'react';
-import { NavigationContainer } from '@react-navigation/native';
+import { NavigationContainer, useNavigationContainerRef } from '@react-navigation/native';
 import { useKeewanoNavigation } from '@keewano/react-native-sdk';
 
 function App() {
-  const navigationRef = useRef(null);
+  const navigationRef = useNavigationContainerRef();
   useKeewanoNavigation(navigationRef);
   return <NavigationContainer ref={navigationRef}>{/* ... */}</NavigationContainer>;
 }

@@ -11,9 +11,7 @@
 
 import type { EmitInitialEventsArgs } from './types/initialEvents';
 
-import { KEvents } from '@keewano/core';
-
-import { clampUint16, clampUint32 } from './clamp';
+import { KEvents, clampUint16, clampUint32 } from '@keewano/core';
 
 /**
  * Emit the init-burst events into the dispatcher in canonical order.

@@ -25,19 +25,19 @@
  *   `logError`) - one-off single-event reports.
  */
 
-import type { ReportCustomEventArgs } from '../api/types/customEvents';
 import type {
+  ReportABTestGroupAssignmentArgs,
   ReportAdItemsGrantedArgs,
   ReportAdOfferedArgs,
   ReportAdRevenueArgs,
+  ReportCustomEventArgs,
   ReportInAppPurchaseArgs,
   ReportInAppPurchaseItemsGrantedArgs,
   ReportItemsExchangeArgs,
   ReportItemsResetArgs,
   ReportSubscriptionItemsGrantedArgs,
   ReportSubscriptionRevenueArgs,
-} from '../api/types/monetization';
-import type { ReportABTestGroupAssignmentArgs } from '../api/types/ui';
+} from '@keewano/core';
 
 import type { KeewanoConfig } from './config';
 

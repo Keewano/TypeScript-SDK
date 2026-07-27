@@ -1,6 +1,6 @@
 {
   "name": "@keewano/react-native-sdk",
-  "version": "1.0.0-0",
+  "version": "1.0.0-41",
   "description": "Bare React Native SDK for Keewano AI Analyst.",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -10,7 +10,8 @@
       "import": "./dist/index.js",
       "require": "./dist/index.js",
       "default": "./dist/index.js"
-    }
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "dist",
@@ -36,6 +37,13 @@
     "react-native",
     "sdk"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Keewano/TypeScript-SDK.git",
+    "directory": "packages/react-native-sdk"
+  },
+  "homepage": "https://github.com/Keewano/TypeScript-SDK#readme",
+  "bugs": "https://github.com/Keewano/TypeScript-SDK/issues",
   "license": "MIT",
   "devDependencies": {
     "@types/react": "^18.3.31"

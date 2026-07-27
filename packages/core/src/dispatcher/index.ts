@@ -12,7 +12,7 @@
  * instead of inspecting raw wire values.
  */
 
-export type { CutPoint, KBatchArgs } from './batch';
+export type { KBatchArgs } from './batch';
 export type {
   AddEventBoolArgs,
   AddEventDateTimeArgs,

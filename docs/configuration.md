@@ -75,7 +75,7 @@ A few methods help you manage the SDK at runtime:
 
 - `Keewano.shutdown()` - stop the SDK and flush in-memory events to disk. Rarely needed; the send loop runs for the life of the app.
 - `Keewano.isReady()` - `true` once `init` has resolved. Reporting methods queue before then, so you usually do not need to check it.
-- `Keewano.getInstallId()` - resolves to the anonymous install id (a lowercase hyphenated GUID), handy for support and cross-referencing a session.
+- `Keewano.getInstallId()` - resolves to the anonymous install id (a lowercase hyphenated UUID), handy for support and cross-referencing a session.
 
 ```typescript
 const installId = await Keewano.getInstallId();

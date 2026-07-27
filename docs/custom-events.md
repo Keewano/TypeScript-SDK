@@ -15,10 +15,11 @@ calls honest.
 3. Pass `customEventSet` to `init`, and call the generated helpers.
 
 ```bash
-npx keewano-codegen --input keewano-custom-events
+npx keewano-codegen --input keewano-custom-events --target expo
 ```
 
-See the [Codegen Reference](codegen.md) for the event JSON format, payload types, CLI flags, and generated output.
+Set `--target` to match your SDK: `react-native` (default), `expo`, or `node`. See the
+[Codegen Reference](codegen.md) for the event JSON format, payload types, CLI flags, and generated output.
 
 ```typescript
 import { Keewano } from '@keewano/react-native-expo-sdk';

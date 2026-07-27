@@ -25,7 +25,8 @@ import { assertIntInRange, assertUint8Array } from '../encoding/assertions';
 
 import { LIMITS } from '../encoding/limits';
 import { assertHeaderValue } from './helpers/assertHeaderValue';
-import { CONTENT_TYPE_OCTET_STREAM, ENDPOINT_PATH, SDK_VERSION } from './helpers/constants';
+import { CONTENT_TYPE_OCTET_STREAM, ENDPOINT_PATH } from './helpers/constants';
+import { resolveSdkTag } from './helpers/sdkTag';
 import { isAbortError } from './helpers/isAbortError';
 import { joinEndpoint } from './helpers/joinEndpoint';
 import { mergeExtraHeaders } from './helpers/mergeExtraHeaders';
@@ -93,7 +94,7 @@ async function getCustomEventMapStatus(
     reserved: {
       'K-Token': apiKey,
       'K-CustomEventHash': String(version),
-      'K-SDK': SDK_VERSION,
+      'K-SDK': resolveSdkTag(),
     },
     extra: extraHeaders,
     fnName: 'getCustomEventMapStatus',
@@ -232,7 +233,7 @@ async function registerCustomEventMap(args: RegisterCustomEventMapArgs): Promise
       'K-Token': apiKey,
       'K-CustomEventHash': String(ceSet.version),
       'K-CustomEventCount': String(ceSet.eventCount),
-      'K-SDK': SDK_VERSION,
+      'K-SDK': resolveSdkTag(),
       'Content-Encoding': 'gzip',
       'Content-Type': CONTENT_TYPE_OCTET_STREAM,
     },

@@ -61,13 +61,14 @@ Each event lives in its own file. The filename basename must match the `n` field
 ## CLI flags
 
 ```
-keewano-codegen --input <dir> [--output <file>] [--watch] [--help] [--version]
+keewano-codegen --input <dir> [--output <file>] [--target <sdk>] [--watch] [--help] [--version]
 ```
 
 | Flag | Default | Meaning |
 |---|---|---|
 | `--input <dir>` | `./keewano-custom-events` | Directory holding the per-event JSON files. |
 | `--output <file>` | `<input>/keewano-events.generated.ts` | Path to the generated TypeScript module. |
+| `--target <sdk>` | `react-native` | SDK the module imports from and matches: `react-native`, `expo`, or `node`. |
 | `--watch` | off | Re-run on every change under `--input` (loads `chokidar` lazily). |
 | `--help` | | Print usage and exit. |
 | `--version` | | Print the codegen version and exit. |
@@ -91,15 +92,48 @@ export function reportBestScore(value: number): void {
 }
 
 export const customEventSet: CustomEventSet = {
-  version: 0xabcd1234,
+  version: 0xABCD1234,
   eventCount: 1,
-  gzipData: new Uint8Array([0x1f, 0x8b /* ... */]),
+  gzipData: new Uint8Array([0x1F, 0x8B /* ... */]),
   events: [{ name: 'BestScore', type: 2 }],
 };
 ```
 
-By default the wrappers import from `@keewano/react-native-sdk`. Target the Expo package
-(or a custom re-export) through the programmatic `emitGeneratedSource` API.
+## Targets
+
+`--target` selects which SDK the generated module imports from and matches its report API.
+The `customEventSet` data is identical across targets; only the imports and wrapper
+signatures differ.
+
+| `--target` | Imports from | Wrapper shape |
+|---|---|---|
+| `react-native` (default) | `@keewano/react-native-sdk` | `report<Name>(value)` calls `Keewano.reportCustomEvent(...)` |
+| `expo` | `@keewano/react-native-expo-sdk` | same top-level `Keewano` call |
+| `node` | `@keewano/node-sdk` | `report<Name>(reporter, value)` calls `reporter.reportCustomEvent(...)` |
+
+On the Node relay, events are emitted through the per-batch reporter, so each wrapper takes
+a `UserReporter` as its first argument:
+
+```typescript
+import type { CustomEventSet, UserReporter } from '@keewano/node-sdk';
+
+export function reportBestScore(reporter: UserReporter, value: number): void {
+  reporter.reportCustomEvent({ name: 'BestScore', value });
+}
+```
+
+Use it inside a `reportUserBatch` build callback:
+
+```typescript
+import { Keewano } from '@keewano/node-sdk';
+import { customEventSet, reportBestScore } from './keewano-custom-events/keewano-events.generated';
+
+await Keewano.init({ apiKey: 'YOUR_API_KEY', customEventSet });
+await Keewano.reportUserBatch({
+  userId,
+  build: (user) => reportBestScore(user, 12345),
+});
+```
 
 ## Exit codes
 

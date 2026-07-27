@@ -42,8 +42,7 @@ events should ship automatically, oldest-first, with nothing lost. See
 
 > [!NOTE]
 > You do not need to call any flush or sync method - reconnect handling is automatic.
-> If you want a clean stop in a test, `await Keewano.shutdown()` flushes in-memory
-> events to disk first.
+> For a clean stop in a test, call `await Keewano.shutdown()` (see [Offline Analytics](offline.md)).
 
 ---
 

@@ -22,13 +22,18 @@ export type { KeewanoApi } from './keewano';
 export type { KeewanoConfig, KeewanoTracker } from './types/config';
 export type { PlatformAdapter } from './types/platformAdapter';
 export type {
+  CustomEventDef,
+  CustomEventSet,
+  CustomEventValue,
   ItemsExchange,
   LocalizedPurchase,
   LocalizedRevenue,
   PurchasePrice,
+  ReportABTestGroupAssignmentArgs,
   ReportAdItemsGrantedArgs,
   ReportAdOfferedArgs,
   ReportAdRevenueArgs,
+  ReportCustomEventArgs,
   ReportInAppPurchaseArgs,
   ReportInAppPurchaseItemsGrantedArgs,
   ReportItemsExchangeArgs,
@@ -36,12 +41,10 @@ export type {
   ReportSubscriptionItemsGrantedArgs,
   ReportSubscriptionRevenueArgs,
   Revenue,
+  TransportFetch,
   UsdCentsPurchase,
   UsdCentsRevenue,
-} from './api/monetization';
-export type { ReportABTestGroupAssignmentArgs } from './api/ui';
-export type { CustomEventValue, ReportCustomEventArgs } from './api/customEvents';
-export type { CustomEventDef, CustomEventSet, TransportFetch } from '@keewano/core';
+} from '@keewano/core';
 export type { KeewanoPressableExtraProps } from './components/KeewanoPressable';
 export type {
   NavigationContainerLike,

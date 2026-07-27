@@ -21,6 +21,12 @@ module.exports = {
   },
   moduleFileExtensions: ['ts', 'tsx', 'js', 'json'],
   /**
+   * Declare a default SDK platform for tests that drive the transport
+   * directly. Production has no default (sdkTag throws until an SDK calls
+   * configureSdkPlatform at init); this only seeds the test environment.
+   */
+  setupFiles: ['<rootDir>/jest.setup.ts'],
+  /**
    * GitLab CI ingests Cobertura XML for coverage; the default
    * `lcov`/`text`/`clover`/`text-summary` set does not produce one
    * and the CI artifact step fails with "no matching files".

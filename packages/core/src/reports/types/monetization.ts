@@ -1,4 +1,4 @@
-import type { AdTypeValue, Item } from '@keewano/core';
+import type { AdTypeValue, Item } from '../../events';
 
 /**
  * Purchase priced in USD cents. The wire payload is a uint32 LE so

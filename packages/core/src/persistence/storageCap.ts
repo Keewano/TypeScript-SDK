@@ -5,20 +5,22 @@
  *
  * When `totalBytes > capBytes`, walk the batches in chronological
  * order (`(batchEndTime, batchNum)`) and rewrite each one larger
- * than {@link BATCH_DROP_THRESHOLD_BYTES} as a 70-byte tombstone:
- *   `[batchStartTime uint32 LE][BATCH_DROPPED uint16 LE][TOO_MANY_UNSENT_EVENTS uint32 LE]`
- * The tombstone keeps the original identity (UserId, DataSessionId,
+ * than {@link BATCH_DROP_THRESHOLD_BYTES} as a tombstone whose
+ * payload is a single `BATCH_DROPPED` event (reason
+ * `TOO_MANY_UNSENT_EVENTS`) encoded by the active codec. The
+ * tombstone keeps the original identity (UserId, DataSessionId,
  * BatchNum, BatchStartTime, BatchEndTime, CustomEventsVersion) so the
  * server can correlate the drop with the session that produced it.
  *
  * Stops as soon as the running total falls at or below `capBytes`.
  * Files already at or below {@link BATCH_DROP_THRESHOLD_BYTES} are
- * skipped because they are already tombstoned (a fresh tombstone
- * emits exactly 70 bytes).
+ * skipped because they are already tombstoned (a fresh binary
+ * tombstone file is exactly 70 bytes).
  */
 
-import type { BatchFileInfo, BatchRecord } from './types/kfile';
+import type { BatchFileInfo } from './types/kfile';
 import type { ReduceStorageSizeArgs } from './types/storageCap';
+import type { Codec, EncodedBatch } from '../codec/types/codec';
 
 import { KEvents } from '../events/kevents';
 import { KBatchDropReason } from '../events/batchDropReason';
@@ -28,63 +30,74 @@ import { KFILE_FOOTER_SIZE } from './helpers/kfileFooter';
 import { KFILE_HEADER_SIZE } from './helpers/kfileHeader';
 
 /**
- * Bytes a fresh tombstone payload occupies: timestamp (4) +
+ * Bytes a fresh binary tombstone payload occupies: timestamp (4) +
  * eventId (2) + reason (4).
  */
 const TOMBSTONE_PAYLOAD_SIZE = 10;
 
 /**
- * Total on-disk size of a tombstoned batch file: header + tombstone
- * payload + footer. Used as the lower bound for the "is this file
- * worth rewriting?" check.
+ * Total on-disk size of a binary tombstoned batch file: header +
+ * tombstone payload + footer. Used as the lower bound for the "is
+ * this file worth rewriting?" check.
  */
 const TOMBSTONE_FILE_SIZE = KFILE_HEADER_SIZE + TOMBSTONE_PAYLOAD_SIZE + KFILE_FOOTER_SIZE;
 
 /**
  * Files at or below this size are skipped during reduction. A fresh
- * tombstone is exactly {@link TOMBSTONE_FILE_SIZE} = 70 bytes, so any
- * file at or under 70 is already a tombstone (or smaller) and would
- * not free meaningful disk space on rewrite.
+ * binary tombstone is exactly {@link TOMBSTONE_FILE_SIZE} = 70 bytes,
+ * so any file at or under 70 is already a tombstone (or smaller) and
+ * would not free meaningful disk space on rewrite.
  */
 const BATCH_DROP_THRESHOLD_BYTES = TOMBSTONE_FILE_SIZE;
 
 /**
- * Build the 10-byte tombstone payload that replaces the original
- * batch's event-stream. Format:
- *
- * ```
- * 0..3   timestamp  uint32 LE  (= batchStartTime)
- * 4..5   eventId    uint16 LE  (= KEvents.BATCH_DROPPED = 42)
- * 6..9   reason     uint32 LE  (= KBatchDropReason.TOO_MANY_UNSENT_EVENTS = 2)
- * ```
- */
-function buildTombstonePayload(batchStartTime: number): Uint8Array {
-  if (!Number.isSafeInteger(batchStartTime) || batchStartTime < 0 || batchStartTime > 0xffffffff) {
-    throw new RangeError('buildTombstonePayload: batchStartTime must be a uint32');
-  }
-  const payload = new Uint8Array(TOMBSTONE_PAYLOAD_SIZE);
-  const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
-  view.setUint32(0, batchStartTime, true);
-  view.setUint16(4, KEvents.BATCH_DROPPED, true);
-  view.setUint32(6, KBatchDropReason.TOO_MANY_UNSENT_EVENTS, true);
-  return payload;
-}
-
-/**
  * Replace `original` with a tombstone batch carrying the same
  * identity / sequence / timing / schema-version fields. Only the
- * event-stream payload differs.
+ * payload differs: a single `BATCH_DROPPED(TOO_MANY_UNSENT_EVENTS)`
+ * event stamped with the original `batchStartTime`, encoded by the
+ * same codec that will serialize the container - so the tombstone
+ * stays valid for any batch encoding.
  */
-function buildTombstoneBatch(original: BatchRecord): BatchRecord {
+function buildTombstoneBatch(codec: Codec, original: EncodedBatch): EncodedBatch {
+  /**
+   * The cut threshold is irrelevant for a single 10-byte event; any
+   * positive value works. Reuse the payload size to avoid importing
+   * dispatcher policy here.
+   */
+  const builder = codec.createBuilder({ cutThresholdBytes: TOMBSTONE_PAYLOAD_SIZE + 1 });
+  builder.addEventUint32({
+    eventId: KEvents.BATCH_DROPPED,
+    timestamp: original.batchStartTime,
+    value: KBatchDropReason.TOO_MANY_UNSENT_EVENTS,
+  });
+  const slices = builder.seal({ finalBatchEndTime: original.batchEndTime });
+  /**
+   * A single added event must seal to exactly one slice. A codec that
+   * returns anything else violates the builder contract, and silently
+   * persisting an empty or truncated tombstone would hide the bug -
+   * fail loudly instead.
+   */
+  const slice = slices[0];
+  if (slice === undefined || slices.length !== 1) {
+    throw new Error('buildTombstoneBatch: expected one tombstone slice');
+  }
   return {
-    batchVersion: original.batchVersion,
-    userId: original.userId,
-    dataSessionId: original.dataSessionId,
+    /**
+     * Stamp the active codec's id, not the original's: the tombstone
+     * payload was just encoded by this codec.
+     */
+    codecId: codec.id,
+    metadata: {
+      userId: original.metadata.userId,
+      dataSessionId: original.metadata.dataSessionId,
+      batchVersion: original.metadata.batchVersion,
+      customEventsVersion: original.metadata.customEventsVersion,
+    },
     batchNum: original.batchNum,
-    batchStartTime: original.batchStartTime,
-    batchEndTime: original.batchEndTime,
-    data: buildTombstonePayload(original.batchStartTime),
-    customEventsVersion: original.customEventsVersion,
+    /** The slice carries the codec's (clamp-corrected) timing stamps. */
+    batchStartTime: slice.batchStartTime,
+    batchEndTime: slice.batchEndTime,
+    payload: slice.payload,
   };
 }
 
@@ -98,20 +111,20 @@ function buildTombstoneBatch(original: BatchRecord): BatchRecord {
  *
  * The drift guard matters because `saveBatch` writes to the canonical
  * `${batchEndTime}_${batchNum}.kwub` path derived from the *loaded*
- * header, not from `entry.path`. It is not purely a concurrency
- * defense: a file whose on-disk header identity disagrees with its
- * filename (a corrupted file, or one left by an aborted prior rewrite)
- * would otherwise be tombstoned at a different canonical path, leaving
- * the original oversized file untouched and charging the new
- * tombstone's size against the listed entry. The size check closes the
- * same gap for a file whose byte length drifted from what `listBatches`
+ * container, not from `entry.path`. It is not purely a concurrency
+ * defense: a file whose on-disk identity disagrees with its filename
+ * (a corrupted file, or one left by an aborted prior rewrite) would
+ * otherwise be tombstoned at a different canonical path, leaving the
+ * original oversized file untouched and charging the new tombstone's
+ * size against the listed entry. The size check closes the same gap
+ * for a file whose byte length drifted from what `listBatches`
  * reported. The reduction stays correct under the documented
- * single-writer contract; these checks keep it correct against stale or
- * malformed on-disk state as well.
+ * single-writer contract; these checks keep it correct against stale
+ * or malformed on-disk state as well.
  */
 async function tombstoneOne(args: ReduceStorageSizeArgs, entry: BatchFileInfo): Promise<number> {
-  const { storage, dir } = args;
-  const original = await loadBatch({ storage, path: entry.path });
+  const { storage, dir, codec } = args;
+  const original = await loadBatch({ storage, path: entry.path, codec });
   if (original === null) {
     return 0;
   }
@@ -122,8 +135,17 @@ async function tombstoneOne(args: ReduceStorageSizeArgs, entry: BatchFileInfo): 
   if (currentSize === null || currentSize !== entry.size) {
     return 0;
   }
-  const tombstone = buildTombstoneBatch(original);
-  const newSize = await saveBatch({ storage, dir, batch: tombstone });
+  const tombstone = buildTombstoneBatch(codec, original);
+  /**
+   * Serialize before writing: a non-binary codec's tombstone container
+   * can be larger than the original file, and rewriting would grow the
+   * directory instead of shrinking it. Skip the write in that case.
+   */
+  const newSize = codec.serializeContainer(tombstone).length;
+  if (newSize >= entry.size) {
+    return 0;
+  }
+  await saveBatch({ storage, dir, codec, batch: tombstone });
   return newSize - entry.size;
 }
 
@@ -181,6 +203,6 @@ export {
   BATCH_DROP_THRESHOLD_BYTES,
   TOMBSTONE_FILE_SIZE,
   TOMBSTONE_PAYLOAD_SIZE,
-  buildTombstonePayload,
+  buildTombstoneBatch,
   reduceStorageSize,
 };

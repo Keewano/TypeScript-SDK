@@ -41,7 +41,7 @@ Events you declare yourself, on top of the built-ins. See [Custom Events](custom
 > [!NOTE]
 > A few identifiers exist in the protocol but are never emitted by this SDK because
 > React Native has no equivalent API for them (for example GPU type and VRAM size).
-> They are reserved so the wire format stays compatible with the Keewano Unity SDK.
+> They are reserved so the wire format stays compatible across all Keewano SDKs.
 
 ---
 

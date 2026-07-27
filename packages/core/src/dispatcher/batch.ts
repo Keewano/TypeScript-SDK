@@ -1,33 +1,20 @@
 /**
- * In-memory accumulator for one batch's worth of event-stream bytes.
+ * Per-batch state for one side of the dispatcher's double buffer.
  *
- * A `KBatch` holds the identity context (install / user / data-session
- * GUIDs), the wire-protocol version stamp, batch sequencing metadata
- * (number, start / end timestamps), the variable-sized event-stream
- * payload, and the cut-point list used by the send loop to slice an
- * oversized in-flight batch into multiple on-disk files.
+ * A `KBatch` binds the identity context (install / user / data-session
+ * UUIDs), the wire-protocol version stamp, the custom-events schema
+ * version, and the sequencing number to a codec `BatchBuilder` that
+ * owns the encoded event bytes, the cut bookkeeping, and the batch
+ * time interval.
  *
  * The dispatcher owns two `KBatch` instances at all times: `inBatch`
- * (accumulates new events) and `sendingBatch` (frozen snapshot being
- * persisted / shipped). They are swapped atomically by `swapBatches`.
- *
- * @example
- * ```ts
- * const batch = new KBatch({
- *   installId: install,
- *   userId: user,
- *   dataSessionId: session,
- * });
- *
- * batch.data.writeUint32LE(timestamp);
- * batch.data.writeUint16LE(KEvents.BUTTON_CLICK);
- * batch.data.writeString('Play');
- * ```
+ * (accumulates new events through its builder) and `sendingBatch`
+ * (frozen snapshot being persisted / shipped). They are swapped
+ * atomically by `swapBatches`.
  */
 
-import type { CutPoint, KBatchArgs } from './types/batch';
-
-import { BinaryStream } from '../encoding/binaryStream';
+import type { KBatchArgs } from './types/batch';
+import type { BatchBuilder } from '../codec/types/codec';
 
 /**
  * Wire-protocol batch-format version emitted on disk and read back.
@@ -43,50 +30,46 @@ class KBatch {
   userId: Uint8Array;
   dataSessionId: Uint8Array;
   batchNum: number;
-  data: BinaryStream;
+  builder: BatchBuilder;
   customEventsVersion: number;
-  batchStartTime: number;
-  batchEndTime: number;
   batchVersion: number;
-  cutPositions: CutPoint[];
 
   /**
-   * Construct an empty batch bound to the given identity GUIDs.
+   * Construct an empty batch bound to the given identity UUIDs and
+   * codec builder.
    *
    * `customEventsVersion` defaults to `0`, which is the wire-protocol
    * sentinel meaning "no custom-events schema registered". The host
    * application overwrites it after loading or uploading the schema
    * via the storage / network layer.
    */
-  constructor({ installId, userId, dataSessionId }: KBatchArgs) {
+  constructor({ installId, userId, dataSessionId, builder }: KBatchArgs) {
     this.installId = installId;
     this.userId = userId;
     this.dataSessionId = dataSessionId;
     this.batchNum = 0;
-    this.data = new BinaryStream();
+    this.builder = builder;
     this.customEventsVersion = 0;
-    this.batchStartTime = 0;
-    this.batchEndTime = 0;
     this.batchVersion = CURRENT_BATCH_VERSION;
-    this.cutPositions = [];
+  }
+
+  /** Encoded byte size accumulated in the builder so far. */
+  byteSize(): number {
+    return this.builder.byteSize();
   }
 
   /**
    * Reset the accumulator to the post-swap empty state without
-   * dropping the install / user / session identity or reallocating
-   * the underlying byte buffer.
+   * dropping the install / user / session identity or the builder.
    *
    * @returns This batch for chaining.
    */
   resetForReuse(): this {
     this.batchNum = 0;
-    this.data.reset();
-    this.cutPositions = [];
-    this.batchStartTime = 0;
-    this.batchEndTime = 0;
+    this.builder.reset();
     return this;
   }
 }
 
-export type { CutPoint, KBatchArgs } from './types/batch';
+export type { KBatchArgs } from './types/batch';
 export { CURRENT_BATCH_VERSION, KBatch };

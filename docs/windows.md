@@ -21,9 +21,9 @@ You can also opt out of automatic capture entirely (see [Configuration](configur
 and report every click manually instead.
 
 > [!TIP]
-> For a one-off custom button you can use the `KeewanoPressable` component, a drop-in
-> replacement for `Pressable` that always reports - handy inside UI stacks the global
-> patch does not reach.
+> For a one-off custom button you can use the `KeewanoPressable` component - pass it
+> your `Pressable` via the `pressable` prop and it always reports, handy inside UI
+> stacks the global patch does not reach.
 
 ## Windows and popups
 

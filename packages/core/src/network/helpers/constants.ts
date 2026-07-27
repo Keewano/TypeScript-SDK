@@ -4,8 +4,6 @@
  * file instead of every transport function.
  */
 
-import { version as PACKAGE_VERSION } from '../../../package.json';
-
 /**
  * Default Keewano ingress base URL. Exported as a convenience for
  * callers that do not need a custom endpoint; every transport
@@ -34,16 +32,4 @@ const ENDPOINT_PATH = {
  */
 const CONTENT_TYPE_OCTET_STREAM = 'application/octet-stream';
 
-/**
- * `K-SDK` HTTP header value. The version portion is read at compile
- * time from `packages/core/package.json` via `resolveJsonModule`, so
- * bumping that field is the only step needed to update the wire
- * identifier - no source edit, no codegen, no manual sync command.
- *
- * The `ReactNative/` prefix is provisional - the server team has
- * not yet confirmed the canonical `K-SDK` token shape. When that
- * confirmation lands, edit this template string.
- */
-const SDK_VERSION = `ReactNative/${PACKAGE_VERSION}`;
-
-export { CONTENT_TYPE_OCTET_STREAM, ENDPOINT_PATH, KEEWANO_DEFAULT_BASE_URL, SDK_VERSION };
+export { CONTENT_TYPE_OCTET_STREAM, ENDPOINT_PATH, KEEWANO_DEFAULT_BASE_URL };

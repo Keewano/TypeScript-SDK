@@ -2,7 +2,7 @@
  * Internal argument-validation helpers shared across the encoding
  * primitives. Deliberately not re-exported from the encoding barrel
  * or the package root - they exist to give the public primitives
- * (`writeVarintU`, `BinaryStream`, `fnv1a32`, GUID codec) a consistent
+ * (`writeVarintU`, `BinaryStream`, `fnv1a32`, UUID codec) a consistent
  * way to throw on invalid input without leaking internals into the
  * SDK surface.
  *
@@ -62,8 +62,8 @@ function assertIntInRange({ n, min, max, fnName }: AssertIntInRangeArgs): void {
 
 /**
  * Throw `TypeError` when every byte of `bytes` is zero. Intended as a
- * boundary check at the wire layer for GUID buffers (`installId`,
- * `userId`, `dataSessionId`) - an all-zero GUID on the wire is a
+ * boundary check at the wire layer for UUID buffers (`installId`,
+ * `userId`, `dataSessionId`) - an all-zero UUID on the wire is a
  * known corruption signal and is treated as a ghost identity by the
  * server.
  *

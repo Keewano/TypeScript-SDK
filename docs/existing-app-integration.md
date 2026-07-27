@@ -29,8 +29,8 @@ player's id so their pre-SDK and post-SDK activity line up.
 Keewano.setUserId('11111111-1111-4111-8111-111111111111');
 ```
 
-`setUserId` accepts a 36-char hyphenated GUID or a `bigint`. Call it as soon as you
-know who the player is.
+`setUserId` accepts a 36-char hyphenated UUID or a `bigint` - any real user id, not
+the all-zero id (which is rejected). Call it as soon as you know who the player is.
 
 ## Everything else just works
 

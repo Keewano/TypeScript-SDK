@@ -24,7 +24,7 @@
 import { assertIntInRange, assertUint8Array } from './assertions';
 import { LIMITS } from './limits';
 import { writeVarintU } from './varint';
-import { guidToBytes } from './guid';
+import { uuidToBytes } from './uuid';
 
 const INITIAL_CAPACITY = 1024;
 
@@ -252,16 +252,16 @@ class BinaryStream {
   }
 
   /**
-   * Write a GUID as 16 bytes in mixed-endian layout. See
-   * {@link guidToBytes} for the exact byte order.
+   * Write a UUID as 16 bytes in mixed-endian layout. See
+   * {@link uuidToBytes} for the exact byte order.
    *
-   * @param guidStr - GUID in canonical "D" form
+   * @param uuidStr - UUID in canonical "D" form
    *                  `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`.
    *                  Case-insensitive on input.
-   * @throws TypeError when `guidStr` is not a valid GUID string.
+   * @throws TypeError when `uuidStr` is not a valid UUID string.
    */
-  writeGuid(guidStr: string): void {
-    this.writeBytes(guidToBytes(guidStr));
+  writeUuid(uuidStr: string): void {
+    this.writeBytes(uuidToBytes(uuidStr));
   }
 
   /**

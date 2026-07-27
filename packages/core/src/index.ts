@@ -13,6 +13,7 @@
  */
 export * from './encoding';
 export * from './events';
+export * from './codec';
 export * from './dispatcher';
 export * from './storage';
 export * from './persistence';
@@ -20,3 +21,6 @@ export * from './network';
 export * from './consent';
 export * from './identity';
 export * from './validation';
+export * from './sendLoop';
+export * from './runtime';
+export * from './reports';

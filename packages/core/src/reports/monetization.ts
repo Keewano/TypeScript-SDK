@@ -4,7 +4,8 @@
  * multiple events sharing one frame-timestamp burst.
  */
 
-import type { BinaryStream, Item, KEvent } from '@keewano/core';
+import type { WireItem } from '../codec/types/codec';
+import type { Item, KEvent } from '../events';
 import type {
   PurchasePrice,
   ReportAdItemsGrantedArgs,
@@ -20,12 +21,10 @@ import type {
   UsdCentsPurchase,
   UsdCentsRevenue,
 } from './types/monetization';
-import type { SdkRuntime } from '../runtime';
+import type { KeewanoRuntime } from '../runtime';
 
-import { KEvents } from '@keewano/core';
-
-import { clampInt32NonNegative, clampNonNegativeFloat, clampUint32, clampUint8 } from '../clamp';
-
+import { KEvents } from '../events';
+import { clampInt32NonNegative, clampNonNegativeFloat, clampUint32, clampUint8 } from './clamp';
 import { runWhenReady, truncateString } from './reportHelpers';
 
 /**
@@ -40,7 +39,7 @@ import { runWhenReady, truncateString } from './reportHelpers';
  *   as the event's leading payload, NOT as a separate event.
  * items - Items array packed inline after the label string. Typed
  *   loosely to accept `snapshotItems` output, whose invalid entries
- *   (null / undefined / primitive) are filtered by `writeItemsArray`.
+ *   (null / undefined / primitive) are filtered by `normalizeItemsForWire`.
  */
 interface ItemsGrantedEventConfig {
   eventId: KEvent;
@@ -69,7 +68,7 @@ function isUsdCentsRevenue(revenue: Revenue): revenue is UsdCentsRevenue {
  * `runWhenReady` so the timestamp reflects the user action, not
  * the drain time when a pre-init-queued op finally runs.
  */
-function emitTimestampEvent(runtime: SdkRuntime, eventId: KEvent, unixSec: number): void {
+function emitTimestampEvent(runtime: KeewanoRuntime, eventId: KEvent, unixSec: number): void {
   runtime.dispatcher.setFrameTimestamp(unixSec);
   runtime.dispatcher.addEventDateTime({ eventId, date: unixSec });
 }
@@ -125,12 +124,12 @@ function snapshotRevenue(revenue: Revenue): RevenueSnapshot {
 /**
  * Capture a stable snapshot of an `Item[]` at API-call time.
  * Non-array inputs collapse to an empty array (mirrors
- * `writeItemsArray`'s Array.isArray guard). Each valid object entry
+ * `normalizeItemsForWire`'s Array.isArray guard). Each valid object entry
  * is cloned to a fresh `{ name, count }` object so a host that
  * mutates the original entries after the call cannot change the
  * bytes emitted by the queued `runWhenReady` callback. Invalid
  * entries (sparse holes, null, primitives) are preserved verbatim
- * so the snapshot return type stays honest; `writeItemsArray`
+ * so the snapshot return type stays honest; `normalizeItemsForWire`
  * filters them out at emit time (missing-name / null / non-object
  * checks, count clamp), so this helper stays cheap and never casts.
  */
@@ -153,14 +152,17 @@ function snapshotItems(items: ReadonlyArray<Item>): Array<Item | null | undefine
  * the user-action time on the wire instead of the drain time.
  */
 function emitItemsGrantedEvent(
-  runtime: SdkRuntime,
+  runtime: KeewanoRuntime,
   config: ItemsGrantedEventConfig,
   unixSec: number,
 ): void {
   runtime.dispatcher.setFrameTimestamp(unixSec);
   const truncated = truncateString(config.label);
-  runtime.dispatcher.addEventString({ eventId: config.eventId, str: truncated });
-  writeItemsArray(runtime.dispatcher.currentInBatch.data, config.items);
+  runtime.dispatcher.addEventStringItems({
+    eventId: config.eventId,
+    str: truncated,
+    items: normalizeItemsForWire(config.items),
+  });
 }
 
 /**
@@ -187,16 +189,10 @@ function reportInAppPurchase({ productName, price }: ReportInAppPurchaseArgs): v
       eventId: KEvents.PURCHASE_LOCAL_CURRENCY_NAME,
       str: truncateString(priceSnap.currencyCode),
     });
-    /**
-     * `PURCHASE_LOCAL_CURRENCY_AMOUNT` carries a float32 LE payload.
-     * The dispatcher does not expose a typed float32 event, so the
-     * 6-byte HDR is written via a no-payload `addEvent` and the raw
-     * 4 bytes are appended directly into the in-batch stream.
-     */
-    runtime.dispatcher.addEvent(KEvents.PURCHASE_LOCAL_CURRENCY_AMOUNT);
-    runtime.dispatcher.currentInBatch.data.writeFloat32LE(
-      clampNonNegativeFloat(priceSnap.localizedPrice),
-    );
+    runtime.dispatcher.addEventFloat32({
+      eventId: KEvents.PURCHASE_LOCAL_CURRENCY_AMOUNT,
+      value: clampNonNegativeFloat(priceSnap.localizedPrice),
+    });
   });
 }
 
@@ -236,8 +232,10 @@ function reportAdOffered({ placement, adType }: ReportAdOfferedArgs): void {
   runWhenReady((runtime) => {
     runtime.dispatcher.setFrameTimestamp(ts);
     runtime.dispatcher.addEventString({ eventId: KEvents.AD_OFFERED_PLACEMENT, str: pl });
-    runtime.dispatcher.addEvent(KEvents.AD_OFFERED_TYPE);
-    runtime.dispatcher.currentInBatch.data.writeUint8(clampUint8(adType));
+    runtime.dispatcher.addEventUint8({
+      eventId: KEvents.AD_OFFERED_TYPE,
+      value: clampUint8(adType),
+    });
   });
 }
 
@@ -264,10 +262,10 @@ function reportAdRevenue({ placement, revenue }: ReportAdRevenueArgs): void {
       eventId: KEvents.AD_REVENUE_LOCAL_CURRENCY_NAME,
       str: truncateString(revenueSnap.currencyCode),
     });
-    runtime.dispatcher.addEvent(KEvents.AD_REVENUE_LOCAL_CURRENCY_AMOUNT);
-    runtime.dispatcher.currentInBatch.data.writeFloat32LE(
-      clampNonNegativeFloat(revenueSnap.localizedRevenue),
-    );
+    runtime.dispatcher.addEventFloat32({
+      eventId: KEvents.AD_REVENUE_LOCAL_CURRENCY_AMOUNT,
+      value: clampNonNegativeFloat(revenueSnap.localizedRevenue),
+    });
   });
 }
 
@@ -315,10 +313,10 @@ function reportSubscriptionRevenue({ packageName, revenue }: ReportSubscriptionR
       eventId: KEvents.SUBSCRIPTION_LOCAL_CURRENCY_NAME,
       str: truncateString(revenueSnap.currencyCode),
     });
-    runtime.dispatcher.addEvent(KEvents.SUBSCRIPTION_LOCAL_CURRENCY_AMOUNT);
-    runtime.dispatcher.currentInBatch.data.writeFloat32LE(
-      clampNonNegativeFloat(revenueSnap.localizedRevenue),
-    );
+    runtime.dispatcher.addEventFloat32({
+      eventId: KEvents.SUBSCRIPTION_LOCAL_CURRENCY_AMOUNT,
+      value: clampNonNegativeFloat(revenueSnap.localizedRevenue),
+    });
   });
 }
 
@@ -358,9 +356,12 @@ function reportItemsExchange({ name, exchange }: ReportItemsExchangeArgs): void 
   const toSnap = snapshotItems(exchange.to);
   runWhenReady((runtime) => {
     runtime.dispatcher.setFrameTimestamp(ts);
-    runtime.dispatcher.addEventString({ eventId: KEvents.ITEMS_EXCHANGE, str: label });
-    writeItemsArray(runtime.dispatcher.currentInBatch.data, fromSnap);
-    writeItemsArray(runtime.dispatcher.currentInBatch.data, toSnap);
+    runtime.dispatcher.addEventStringItemsExchange({
+      eventId: KEvents.ITEMS_EXCHANGE,
+      str: label,
+      from: normalizeItemsForWire(fromSnap),
+      to: normalizeItemsForWire(toSnap),
+    });
   });
 }
 
@@ -375,8 +376,11 @@ function reportItemsReset({ name, items }: ReportItemsResetArgs): void {
   const itemsSnap = snapshotItems(items);
   runWhenReady((runtime) => {
     runtime.dispatcher.setFrameTimestamp(ts);
-    runtime.dispatcher.addEventString({ eventId: KEvents.ITEMS_RESET, str: label });
-    writeItemsArray(runtime.dispatcher.currentInBatch.data, itemsSnap);
+    runtime.dispatcher.addEventStringItems({
+      eventId: KEvents.ITEMS_RESET,
+      str: label,
+      items: normalizeItemsForWire(itemsSnap),
+    });
   });
 }
 
@@ -415,15 +419,13 @@ function logError(message: string): void {
 }
 
 /**
- * Pack an items array into the stream inline. Wire layout:
- * `[int32 count][repeating: string name | uint32 count]`. The array
- * element count is int32 LE; each per-item count is uint32 LE. Empty
- * arrays are valid and written as `00 00 00 00`.
+ * Normalize an items array into its wire-ready form: filter out
+ * holes / nulls / non-object entries, truncate each name, and clamp
+ * each count to the uint32 range. The builder writes the result
+ * verbatim (`int32 count` + repeating `string name | uint32 count`),
+ * so the normalized length IS the on-wire element count.
  */
-function writeItemsArray(
-  stream: BinaryStream,
-  items: ReadonlyArray<Item | null | undefined>,
-): void {
+function normalizeItemsForWire(items: ReadonlyArray<Item | null | undefined>): WireItem[] {
   /**
    * Normalize away sparse holes, nulls, and non-object entries
    * BEFORE writing the count. A sparse array like `[a, , c]` or
@@ -456,28 +458,25 @@ function writeItemsArray(
    * the decoder. Clamp to the non-negative int32 range.
    */
   const itemCount = clampInt32NonNegative(normalized.length);
-  stream.writeInt32LE(itemCount);
+  const out: WireItem[] = [];
   /**
-   * Iterate exactly `itemCount` times via indexed access so the
-   * body matches the count written on the wire. A `for...of` over
-   * the un-clamped array would desync the payload from its header
-   * for arrays above the int32 ceiling.
+   * Emit exactly `itemCount` entries via indexed access so the
+   * normalized length always matches the on-wire element count. A
+   * `for...of` over the un-clamped array would desync the payload
+   * from its header for arrays above the int32 ceiling.
+   *
+   * Per-item `count` is `uint32 LE` on the wire (full [0, 2^32-1]
+   * range). A NaN / float / negative / overflow `item.count` from
+   * misbehaving app code would otherwise serialize a garbage
+   * quantity the backend cannot interpret, so each count is clamped
+   * here, at the single normalization point.
    */
   for (let i = 0; i < itemCount; i += 1) {
     const item = normalized[i];
     if (item === undefined) break;
-    stream.writeString(truncateString(item.name));
-    /**
-     * Per-item `count` is `uint32 LE` on the wire (the reference
-     * `Item.Count` is a C# `uint`, full `[0, 2^32-1]` range).
-     * `writeUint32LE` accepts any number and wraps; a NaN / float /
-     * negative / overflow `item.count` from misbehaving app code
-     * would otherwise serialize a garbage quantity the backend
-     * cannot interpret. Clamp to the uint32 range so the wire always
-     * carries a valid count.
-     */
-    stream.writeUint32LE(clampUint32(item.count));
+    out.push({ name: truncateString(item.name), count: clampUint32(item.count) });
   }
+  return out;
 }
 
 export type {

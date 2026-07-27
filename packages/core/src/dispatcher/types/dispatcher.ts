@@ -2,21 +2,31 @@
  * Args / state types for the KEventDispatcher.
  */
 
+import type { Codec, WireItem } from '../../codec/types/codec';
+
 /**
  * Constructor args for {@link KEventDispatcher}.
  *
- * @property installId - 16-byte install GUID. Persisted across launches.
- * @property userId - 16-byte user GUID. May be all-zero before the
+ * @property installId - 16-byte install UUID. Persisted across launches.
+ * @property userId - 16-byte user UUID. May be all-zero before the
  *   game sets it via `setUserId`.
- * @property dataSessionId - 16-byte session GUID, fresh per launch.
+ * @property dataSessionId - 16-byte session UUID, fresh per launch.
  * @property initialTimestamp - Unix-seconds UTC value used as the
  *   first event-record header timestamp. Update with `setFrameTimestamp`.
+ * @property codec - Batch encoding used by both accumulator builders.
+ *   Defaults to the binary codec when omitted.
+ * @property unrefTimers - When `true`, the idle `waitForSignal` timer is
+ *   `unref`-ed so a parked send loop never keeps a Node process alive.
+ *   Defaults to `false`; only the Node facade passes `true` (the host
+ *   timer is a bare number on React Native / web, where it is a no-op).
  */
 interface KEventDispatcherArgs {
   installId: Uint8Array;
   userId: Uint8Array;
   dataSessionId: Uint8Array;
   initialTimestamp: number;
+  codec?: Codec;
+  unrefTimers?: boolean;
 }
 
 /**
@@ -93,11 +103,55 @@ interface WaitForSignalArgs {
   timeoutMs: number;
 }
 
+/**
+ * Args for the `addEventStringChar` method.
+ *
+ * @property eventId - One of the `KEvents` values (uint16).
+ * @property str - Pre-truncated string payload.
+ * @property charCode - Trailing byte code in [0, 255].
+ */
+interface AddEventStringCharArgs {
+  eventId: number;
+  str: string;
+  charCode: number;
+}
+
+/**
+ * Args for the `addEventStringItems` method.
+ *
+ * @property eventId - One of the `KEvents` values (uint16).
+ * @property str - Pre-truncated label.
+ * @property items - Pre-normalized wire items (filtered / truncated / clamped).
+ */
+interface AddEventStringItemsArgs {
+  eventId: number;
+  str: string;
+  items: readonly WireItem[];
+}
+
+/**
+ * Args for the `addEventStringItemsExchange` method.
+ *
+ * @property eventId - One of the `KEvents` values (uint16).
+ * @property str - Pre-truncated label.
+ * @property from - Pre-normalized items on the giving side.
+ * @property to - Pre-normalized items on the receiving side.
+ */
+interface AddEventStringItemsExchangeArgs {
+  eventId: number;
+  str: string;
+  from: readonly WireItem[];
+  to: readonly WireItem[];
+}
+
 export type {
   AddEventBoolArgs,
   AddEventDateTimeArgs,
   AddEventNumberArgs,
   AddEventStringArgs,
+  AddEventStringCharArgs,
+  AddEventStringItemsArgs,
+  AddEventStringItemsExchangeArgs,
   AddEventUint16x2Args,
   KEventDispatcherArgs,
   WaitForSignalArgs,

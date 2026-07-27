@@ -1,10 +1,8 @@
-import type {
-  ConsentState,
-  CustomEventSet,
-  KBatch,
-  KEventDispatcher,
-  StorageAdapter,
-} from '@keewano/core';
+import type { ConsentState } from '../../consent';
+import type { Codec, EncodedBatchSlice } from '../../codec/types/codec';
+import type { KBatch, KEventDispatcher } from '../../dispatcher';
+import type { CustomEventSet, Transport } from '../../network';
+import type { StorageAdapter } from '../../storage';
 
 /**
  * Public args bag accepted by `runSendLoop`.
@@ -14,14 +12,16 @@ import type {
  *   sending batch, and the test-user marker.
  * endpoint - Ingress base URL. Joined with `/in` for batch POSTs.
  * apiKey - Project-scoped secret sent as `K-Token`.
- * installId - 16-byte install GUID. Persisted across launches.
+ * installId - 16-byte install UUID sent as `K-InstallId`. A device SDK's
+ *   real persisted id, or all-zero for a server-relay loop.
  * getConsent - Callback that returns the current consent state on
  *   every iteration. The runtime singleton is the source of truth;
  *   the loop reads through this function so a consent flip while
  *   the loop is mid-iteration takes effect on the next pass.
  * getNextBatchNum - Callback that returns and increments the
  *   runtime's monotonic batchNum counter. Each saved `.kwub` file
- *   gets a fresh number; the counter resets to 0 per init.
+ *   gets a fresh number; the host owns the counter's seed (a device
+ *   SDK starts at 0 per init, a server relay may reseed from disk).
  * signal - Abort signal that ends the loop. `shutdown()` aborts it.
  * batchesDir - Directory under the storage adapter where `.kwub`
  *   batch files live.
@@ -34,6 +34,10 @@ import type {
  * customEventSet - Optional custom-events schema. When set, the loop
  *   probes `GET /custom` once per session and uploads via `POST /custom`
  *   on `204` before any `POST /in` is allowed.
+ * codec - Batch encoding for persist / load / tombstone passes.
+ *   Defaults to the binary codec.
+ * transport - Delivery protocol for the ship pass. Defaults to the
+ *   binary transport.
  * getExtraHeaders - Optional provider for extra HTTP headers. Resolved
  *   once per iteration (sync or async) and merged into every request;
  *   reserved headers win and a provider throw degrades to no extras.
@@ -52,6 +56,8 @@ interface RunSendLoopArgs {
   batchesPerCycle?: number;
   capBytes?: number;
   customEventSet?: CustomEventSet;
+  codec?: Codec;
+  transport?: Transport;
   getExtraHeaders?: () => Record<string, string> | Promise<Record<string, string>>;
 }
 
@@ -81,6 +87,10 @@ interface RunSendLoopArgs {
  *   on the context (not the runtime) because only the loop reads
  *   and writes it; a fresh init starts a fresh session with
  *   `registered = false` regardless of any prior session's result.
+ * configErrorLogged - Mutable session flag flipped to `true` after
+ *   the first configuration-bug log (a TypeError / RangeError from
+ *   the transport's validation layer). Keeps the console.error
+ *   one-shot per loop session instead of repeating every iteration.
  * getExtraHeaders - See `RunSendLoopArgs.getExtraHeaders`. `undefined`
  *   when the host supplied no provider.
  * extraHeaders - Headers resolved from `getExtraHeaders` at the top of
@@ -101,8 +111,11 @@ interface LoopContext {
   capBytes: number;
   customEventSet: CustomEventSet | undefined;
   customEventsRegistered: boolean;
+  configErrorLogged: boolean;
   getExtraHeaders: (() => Record<string, string> | Promise<Record<string, string>>) | undefined;
   extraHeaders: Record<string, string>;
+  codec: Codec;
+  transport: Transport;
 }
 
 /**
@@ -139,58 +152,35 @@ interface PersistAccumulatedBatchArgs {
   dispatcher: KEventDispatcher;
   dir: string;
   allocBatchNum: () => number;
+  codec?: Codec;
 }
 
 /**
- * Args bag for the private `saveAllSubBatches` helper that slices
- * the swapped sending batch along its `cutPositions` into multiple
- * `.kwub` files.
+ * Args bag for the private `saveSlices` helper that persists the
+ * sealed slices of one swapped sending batch.
  *
- * storage - Storage adapter the sub-batch files are written through.
+ * storage - Storage adapter the slice files are written through.
  * dir - Directory under the storage adapter for `.kwub` files.
- * sending - Dispatcher's currently-frozen sending batch to slice.
+ * codec - Batch encoding that serializes each container.
+ * sending - Source sending batch the identity fields are pulled
+ *   from (userId / dataSessionId / batchVersion / customEventsVersion).
+ * slices - Whole-event slices produced by the builder seal.
  * allocBatchNum - Allocator the helper calls once per slice so each
  *   on-disk file gets a fresh monotonic batchNum.
  */
-interface SaveAllSubBatchesArgs {
+interface SaveSlicesArgs {
   storage: StorageAdapter;
   dir: string;
+  codec: Codec;
   sending: KBatch;
+  slices: readonly EncodedBatchSlice[];
   allocBatchNum: () => number;
-}
-
-/**
- * Args bag for the private `trySaveSubBatch` helper. Carries one
- * slice of the swapped payload (with its own batchNum + start/end
- * times) plus the identity fields cloned from the parent sending
- * batch. Centralizes the `KBatch` -> `BatchRecord` projection so
- * future wire-shape changes touch one place.
- *
- * storage - Storage adapter the slice is written through.
- * dir - Directory under the storage adapter for `.kwub` files.
- * sending - Source sending batch the identity fields are pulled
- *   from (userId / dataSessionId / batchVersion / customEventsVersion).
- * data - Raw payload bytes for this slice (a `subarray` view into
- *   the sending batch's data buffer).
- * batchStartTime - Slice-window start, Unix seconds.
- * batchEndTime - Slice-window end, Unix seconds.
- * batchNum - Allocated batch number for this slice.
- */
-interface TrySaveSubBatchArgs {
-  storage: StorageAdapter;
-  dir: string;
-  sending: KBatch;
-  data: Uint8Array;
-  batchStartTime: number;
-  batchEndTime: number;
-  batchNum: number;
 }
 
 export type {
   LoopContext,
   PersistAccumulatedBatchArgs,
   RunSendLoopArgs,
-  SaveAllSubBatchesArgs,
-  TrySaveSubBatchArgs,
+  SaveSlicesArgs,
   WaitForSignalOrTimeoutArgs,
 };

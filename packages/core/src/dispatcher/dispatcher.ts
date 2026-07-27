@@ -1,19 +1,20 @@
 /**
- * Core event accumulator: receives `addEvent*` calls, writes
- * wire-protocol bytes into the in-batch buffer, marks cut points when
- * the buffer crosses size thresholds, and exposes a swap + signal pair
- * so a send loop can hand off a frozen batch for persistence and HTTP
- * delivery.
+ * Core event accumulator: receives `addEvent*` calls, validates them,
+ * forwards the encoding to the active codec's `BatchBuilder`, marks
+ * the wake signal when the encoded size crosses the threshold, and
+ * exposes a swap + signal pair so a send loop can hand off a frozen
+ * batch for persistence and HTTP delivery.
  *
  * The dispatcher is single-threaded by virtue of the JS event loop, so
  * the swap-and-clear of `inBatch` happens in one synchronous tick from
  * the caller's perspective. External readers of `sendingBatch` never
  * observe a partially-cleared accumulator.
  *
- * Scope: in-memory accumulation, cut-point bookkeeping, atomic swap,
- * signal mechanism, and identity setters. Storage-aware behaviours
- * (custom-event map loading, the send loop, on-disk batch sizing)
- * live in the storage / network layers.
+ * Scope: input validation, frame-timestamp policy, threshold
+ * bookkeeping, atomic swap, signal mechanism, and identity setters.
+ * Byte encoding and cut placement live in the codec's builder;
+ * storage-aware behaviours (custom-event map loading, the send loop,
+ * on-disk batch sizing) live in the storage / network layers.
  *
  * @example
  * ```ts
@@ -35,11 +36,16 @@ import type {
   AddEventDateTimeArgs,
   AddEventNumberArgs,
   AddEventStringArgs,
+  AddEventStringCharArgs,
+  AddEventStringItemsArgs,
+  AddEventStringItemsExchangeArgs,
   AddEventUint16x2Args,
   KEventDispatcherArgs,
   WaitForSignalArgs,
 } from './types/dispatcher';
+import type { Codec } from '../codec/types/codec';
 
+import { BinaryCodec } from '../codec/binaryCodec';
 import { assertIntInRange, assertNonZeroBytes, assertUint8Array } from '../encoding/assertions';
 import { LIMITS } from '../encoding/limits';
 import { KEvents } from '../events/kevents';
@@ -51,13 +57,13 @@ import { KBatch } from './batch';
  * Wire-protocol byte sizes referenced by `sendIfNeeded`.
  *
  * - WAKE - in-batch byte threshold that signals the send loop.
- * - CUT - byte delta since the last cut at which a new cut point is
- *   recorded so the send loop can slice an oversized batch into
+ * - CUT - byte delta since the last cut at which the builder records
+ *   a cut point so the send loop can slice an oversized batch into
  *   multiple sub-batches on persistence.
  *
  * The per-event-string truncation limit (256 chars for short-string
  * events) is enforced at the public report layer, not here. The
- * dispatcher writes whatever string it gets.
+ * dispatcher forwards whatever string it gets.
  */
 const THRESHOLDS = {
   CUT: 50 * 1024,
@@ -77,10 +83,20 @@ class KEventDispatcher {
   private signalPending: boolean;
 
   /**
+   * When `true`, the idle `waitForSignal` timer is `unref`-ed so a
+   * parked send loop never keeps a Node process alive. No-op where the
+   * host timer is a bare number (React Native / web); only the Node
+   * facade passes `true`.
+   */
+  private readonly unrefTimers: boolean;
+
+  /**
    * Construct a fresh dispatcher with empty `inBatch` / `sendingBatch`
-   * pair and no test-user marker.
+   * pair and no test-user marker. Both batches encode through builders
+   * created by `codec` (the binary codec unless the host injects
+   * another implementation).
    *
-   * Caller owns the lifetime of the passed GUID buffers; the dispatcher
+   * Caller owns the lifetime of the passed UUID buffers; the dispatcher
    * stores them by reference and assumes they are immutable for the
    * duration of the session. Do not mutate the underlying bytes after
    * passing them in.
@@ -91,7 +107,14 @@ class KEventDispatcher {
    * layer (re-applying it via `markAsTestUser` during init); the
    * dispatcher has no knowledge of that persistence.
    */
-  constructor({ installId, userId, dataSessionId, initialTimestamp }: KEventDispatcherArgs) {
+  constructor({
+    installId,
+    userId,
+    dataSessionId,
+    initialTimestamp,
+    codec,
+    unrefTimers = false,
+  }: KEventDispatcherArgs) {
     assertIntInRange({
       fnName: 'KEventDispatcher initialTimestamp',
       max: LIMITS.UINT32_MAX,
@@ -109,15 +132,30 @@ class KEventDispatcher {
       value: installId,
       expectedLength: 16,
     });
-    assertNonZeroBytes({ bytes: installId, fnName: 'KEventDispatcher installId' });
+    /**
+     * No non-zero check on installId: an all-zero id is the legitimate
+     * server-relay sentinel. A device SDK validates its install id
+     * non-zero at load time before it reaches here.
+     */
     assertUint8Array({
       fnName: 'KEventDispatcher userId',
       value: userId,
       expectedLength: 16,
     });
 
-    this.sendingBatch = new KBatch({ installId, userId, dataSessionId });
-    this.inBatch = new KBatch({ installId, userId, dataSessionId });
+    const resolvedCodec: Codec = codec ?? new BinaryCodec();
+    this.sendingBatch = new KBatch({
+      installId,
+      userId,
+      dataSessionId,
+      builder: resolvedCodec.createBuilder({ cutThresholdBytes: THRESHOLDS.CUT }),
+    });
+    this.inBatch = new KBatch({
+      installId,
+      userId,
+      dataSessionId,
+      builder: resolvedCodec.createBuilder({ cutThresholdBytes: THRESHOLDS.CUT }),
+    });
     this.userId = userId;
     this.frameTimestamp = initialTimestamp;
     this.testUserName = null;
@@ -125,6 +163,7 @@ class KEventDispatcher {
     this.signalResolver = null;
     this.signalTimer = null;
     this.signalPending = false;
+    this.unrefTimers = unrefTimers;
   }
 
   /**
@@ -147,8 +186,7 @@ class KEventDispatcher {
 
   /**
    * Read access to the in-batch accumulator. Exposed for tests and
-   * for the send loop to inspect `data.length` and cut points before
-   * swapping.
+   * for the send loop to inspect `byteSize()` before swapping.
    */
   get currentInBatch(): KBatch {
     return this.inBatch;
@@ -180,7 +218,8 @@ class KEventDispatcher {
    * @param eventId - One of the {@link KEvents} values.
    */
   addEvent(eventId: number): void {
-    this.writeHeader(eventId);
+    const timestamp = this.resolveHeader(eventId);
+    this.inBatch.builder.addEvent({ eventId, timestamp });
     this.sendIfNeeded();
   }
 
@@ -199,8 +238,8 @@ class KEventDispatcher {
     if (typeof str !== 'string') {
       throw new TypeError('addEventString: not a string');
     }
-    this.writeHeader(eventId);
-    this.inBatch.data.writeString(str);
+    const timestamp = this.resolveHeader(eventId);
+    this.inBatch.builder.addEventString({ eventId, timestamp, str });
     this.sendIfNeeded();
   }
 
@@ -216,8 +255,8 @@ class KEventDispatcher {
       min: 0,
       n: value,
     });
-    this.writeHeader(eventId);
-    this.inBatch.data.writeUint32LE(value);
+    const timestamp = this.resolveHeader(eventId);
+    this.inBatch.builder.addEventUint32({ eventId, timestamp, value });
     this.sendIfNeeded();
   }
 
@@ -240,9 +279,8 @@ class KEventDispatcher {
       min: 0,
       n: y,
     });
-    this.writeHeader(eventId);
-    this.inBatch.data.writeUint16LE(x);
-    this.inBatch.data.writeUint16LE(y);
+    const timestamp = this.resolveHeader(eventId);
+    this.inBatch.builder.addEventUint16x2({ eventId, timestamp, x, y });
     this.sendIfNeeded();
   }
 
@@ -255,15 +293,15 @@ class KEventDispatcher {
    * @param args - Event ID and date (JS `Date` or Unix seconds).
    */
   addEventDateTime({ eventId, date }: AddEventDateTimeArgs): void {
-    const unixSec = typeof date === 'number' ? date : Math.floor(date.getTime() / 1000);
+    const dateUnixSec = typeof date === 'number' ? date : Math.floor(date.getTime() / 1000);
     assertIntInRange({
       fnName: 'addEventDateTime',
       max: LIMITS.UINT32_MAX,
       min: 0,
-      n: unixSec,
+      n: dateUnixSec,
     });
-    this.writeHeader(eventId);
-    this.inBatch.data.writeUint32LE(unixSec);
+    const timestamp = this.resolveHeader(eventId);
+    this.inBatch.builder.addEventDateTime({ eventId, timestamp, dateUnixSec });
     this.sendIfNeeded();
   }
 
@@ -279,8 +317,8 @@ class KEventDispatcher {
       min: LIMITS.INT32_MIN,
       n: value,
     });
-    this.writeHeader(eventId);
-    this.inBatch.data.writeInt32LE(value);
+    const timestamp = this.resolveHeader(eventId);
+    this.inBatch.builder.addEventInt32({ eventId, timestamp, value });
     this.sendIfNeeded();
   }
 
@@ -295,8 +333,97 @@ class KEventDispatcher {
     if (typeof flag !== 'boolean') {
       throw new TypeError('addEventBool: not a boolean');
     }
-    this.writeHeader(eventId);
-    this.inBatch.data.writeBool(flag);
+    const timestamp = this.resolveHeader(eventId);
+    this.inBatch.builder.addEventBool({ eventId, timestamp, flag });
+    this.sendIfNeeded();
+  }
+
+  /**
+   * Emit a uint8-payload event. Wire layout: `HDR | u8`. Used by
+   * `AD_OFFERED_TYPE` (the ad-type ordinal).
+   *
+   * @param args - Event ID and byte value in [0, 255].
+   */
+  addEventUint8({ eventId, value }: AddEventNumberArgs): void {
+    assertIntInRange({
+      fnName: 'addEventUint8',
+      max: 0xff,
+      min: 0,
+      n: value,
+    });
+    const timestamp = this.resolveHeader(eventId);
+    this.inBatch.builder.addEventUint8({ eventId, timestamp, value });
+    this.sendIfNeeded();
+  }
+
+  /**
+   * Emit a float32-payload event. Wire layout: `HDR | f32_LE`. Used
+   * by the localized revenue amounts. The report layer pre-clamps to
+   * a non-negative finite float.
+   *
+   * @param args - Event ID and float value.
+   */
+  addEventFloat32({ eventId, value }: AddEventNumberArgs): void {
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      throw new TypeError('addEventFloat32: not a finite number');
+    }
+    const timestamp = this.resolveHeader(eventId);
+    this.inBatch.builder.addEventFloat32({ eventId, timestamp, value });
+    this.sendIfNeeded();
+  }
+
+  /**
+   * Emit a string event with a trailing single-byte code. Wire
+   * layout: `HDR | varint(utf8_len) | utf8_bytes | u8`. Used by
+   * `AB_TEST_ASSIGNMENT` (test name + group letter).
+   *
+   * @param args - Event ID, pre-truncated string, and byte code.
+   */
+  addEventStringChar({ eventId, str, charCode }: AddEventStringCharArgs): void {
+    if (typeof str !== 'string') {
+      throw new TypeError('addEventStringChar: not a string');
+    }
+    assertIntInRange({
+      fnName: 'addEventStringChar charCode',
+      max: 0xff,
+      min: 0,
+      n: charCode,
+    });
+    const timestamp = this.resolveHeader(eventId);
+    this.inBatch.builder.addEventStringChar({ eventId, timestamp, str, charCode });
+    this.sendIfNeeded();
+  }
+
+  /**
+   * Emit a string event with one trailing items array. Wire layout:
+   * `HDR | string | int32 count | repeating(string name, u32 count)`.
+   * Used by the items-granted family and `ITEMS_RESET`. The report
+   * layer pre-normalizes the entries (filter / truncate / clamp).
+   *
+   * @param args - Event ID, pre-truncated label, normalized items.
+   */
+  addEventStringItems({ eventId, str, items }: AddEventStringItemsArgs): void {
+    if (typeof str !== 'string') {
+      throw new TypeError('addEventStringItems: not a string');
+    }
+    const timestamp = this.resolveHeader(eventId);
+    this.inBatch.builder.addEventStringItems({ eventId, timestamp, str, items });
+    this.sendIfNeeded();
+  }
+
+  /**
+   * Emit a string event with two trailing items arrays (`from`, then
+   * `to`). Used by `ITEMS_EXCHANGE`. The report layer pre-normalizes
+   * both sides.
+   *
+   * @param args - Event ID, pre-truncated label, normalized sides.
+   */
+  addEventStringItemsExchange({ eventId, str, from, to }: AddEventStringItemsExchangeArgs): void {
+    if (typeof str !== 'string') {
+      throw new TypeError('addEventStringItemsExchange: not a string');
+    }
+    const timestamp = this.resolveHeader(eventId);
+    this.inBatch.builder.addEventStringItemsExchange({ eventId, timestamp, str, from, to });
     this.sendIfNeeded();
   }
 
@@ -309,17 +436,17 @@ class KEventDispatcher {
    * collect-side so the next batch starts without it.
    *
    * Data-loss invariant: the send loop must persist or transmit the
-   * previous `sendingBatch` and clear its byte buffer (via
-   * `resetForReuse` or `data.reset()`) before calling `swapBatches`
-   * again. A second swap before consumption throws rather than
-   * silently overwriting the unsent snapshot.
+   * previous `sendingBatch` and clear its builder (via `resetForReuse`)
+   * before calling `swapBatches` again. A second swap before
+   * consumption throws rather than silently overwriting the unsent
+   * snapshot.
    *
-   * @throws Error when `sendingBatch.data.length !== 0`, i.e. the
+   * @throws Error when `sendingBatch.byteSize() !== 0`, i.e. the
    *   previously frozen batch has not yet been consumed by the send
    *   loop.
    */
   swapBatches(): void {
-    if (this.sendingBatch.data.length !== 0) {
+    if (this.sendingBatch.byteSize() !== 0) {
       throw new Error('swapBatches: previous batch not consumed');
     }
 
@@ -396,6 +523,11 @@ class KEventDispatcher {
         this.signalTimer = null;
         resolve(false);
       }, timeoutMs);
+      if (this.unrefTimers) {
+        /** Optional-call so a host that sets the flag on a runtime whose
+         * `setTimeout` returns a bare number (non-Node) is a no-op, not a crash. */
+        (this.signalTimer as { unref?: () => void }).unref?.();
+      }
 
       this.signalResolver = resolve;
     });
@@ -426,10 +558,10 @@ class KEventDispatcher {
   // --- identity + test user ---
 
   /**
-   * Update the user-identifier GUID, propagate it into the in-batch
+   * Update the user-identifier UUID, propagate it into the in-batch
    * for the next on-disk write, and emit a `USER_ID_ASSIGNED` event
    * marker into the current event stream. The marker has no payload;
-   * the new GUID travels via the .kwub header on the next swap.
+   * the new UUID travels via the container metadata on the next swap.
    *
    * Caller owns the passed buffer's lifetime; the dispatcher stores it
    * by reference and assumes it is immutable. Do not mutate the bytes
@@ -437,10 +569,10 @@ class KEventDispatcher {
    *
    * The marker is a real 6-byte event record, so it goes through the
    * same threshold bookkeeping as any other event: if it pushes the
-   * in-batch past `THRESHOLDS.WAKE` the send loop is signaled, and if
-   * it crosses `THRESHOLDS.CUT` a new cut point is recorded.
+   * in-batch past `THRESHOLDS.WAKE` the send loop is signaled, and the
+   * builder records a cut before it when the cut threshold is crossed.
    *
-   * @param userId - 16-byte user GUID.
+   * @param userId - 16-byte user UUID.
    */
   setUserId(userId: Uint8Array): void {
     assertUint8Array({
@@ -449,7 +581,8 @@ class KEventDispatcher {
       expectedLength: 16,
     });
 
-    this.writeHeader(KEvents.USER_ID_ASSIGNED);
+    const timestamp = this.resolveHeader(KEvents.USER_ID_ASSIGNED);
+    this.inBatch.builder.addEvent({ eventId: KEvents.USER_ID_ASSIGNED, timestamp });
     this.userId = userId;
     this.inBatch.userId = userId;
     this.sendIfNeeded();
@@ -481,22 +614,12 @@ class KEventDispatcher {
   // --- internal helpers ---
 
   /**
-   * Record the batch start time the first time an event lands in an
-   * otherwise-empty in-batch. Subsequent events keep the existing
-   * start time so the whole batch shares one bounding interval.
+   * Validate the record-header pair (current frame timestamp + event
+   * id) and return the timestamp the builder must stamp. Kept as the
+   * single validation point for every addEvent path; the historical
+   * `writeHeader` fnName is preserved in the error messages.
    */
-  private markBatchStartIfNeeded(): void {
-    if (this.inBatch.data.length === 0) {
-      this.inBatch.batchStartTime = this.frameTimestamp;
-    }
-  }
-
-  /**
-   * Write the 6-byte event-record header
-   * `[ts u32 LE][event_id u16 LE]` and mark the batch start time if
-   * this is the first event of the current in-batch.
-   */
-  private writeHeader(eventId: number): void {
+  private resolveHeader(eventId: number): number {
     const ts = this.frameTimestamp;
 
     assertIntInRange({
@@ -513,37 +636,19 @@ class KEventDispatcher {
       n: eventId,
     });
 
-    this.markBatchStartIfNeeded();
-    this.inBatch.batchEndTime = ts;
-    this.inBatch.data.writeUint32LE(ts);
-    this.inBatch.data.writeUint16LE(eventId);
+    return ts;
   }
 
   /**
-   * Signal the send loop and / or record a cut point when the
-   * in-batch crosses the size thresholds.
-   *
-   * - WAKE (1 KB): set the signal so the send loop wakes on its next iteration.
-   * - CUT (50 KB since last cut): append a cut point so the loop can
-   *   slice the in-batch into multiple sub-batches when persisting.
+   * Wake the send loop once the in-batch crosses the WAKE threshold
+   * (1 KB) so it ships on its next iteration instead of waiting out the
+   * idle timer. Cut-point recording lives in the builder (at event
+   * boundaries), so a cut never lands mid-event.
    */
   private sendIfNeeded(): void {
-    const currentSize = this.inBatch.data.length;
-    if (currentSize < THRESHOLDS.WAKE) {
-      return;
+    if (this.inBatch.byteSize() >= THRESHOLDS.WAKE) {
+      this.signalSend();
     }
-
-    const cuts = this.inBatch.cutPositions;
-    const lastCutPos = cuts.at(-1)?.pos ?? 0;
-
-    if (currentSize - lastCutPos >= THRESHOLDS.CUT) {
-      cuts.push({
-        lastEventTime: this.frameTimestamp,
-        pos: currentSize,
-      });
-    }
-
-    this.signalSend();
   }
 }
 
@@ -552,6 +657,9 @@ export type {
   AddEventDateTimeArgs,
   AddEventNumberArgs,
   AddEventStringArgs,
+  AddEventStringCharArgs,
+  AddEventStringItemsArgs,
+  AddEventStringItemsExchangeArgs,
   AddEventUint16x2Args,
   KEventDispatcherArgs,
   WaitForSignalArgs,

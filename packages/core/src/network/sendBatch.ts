@@ -6,9 +6,9 @@
  * HTTP headers. The server reconstructs everything it needs from the
  * headers + body without any in-body framing.
  *
- * Headers emitted on every call (11 always):
+ * Headers emitted on every call:
  *   Content-Type: application/octet-stream
- *   K-InstallId, K-Uid, K-DS (GUID "D" strings, lowercase hyphenated)
+ *   K-InstallId, K-Uid, K-DS (UUID "D" strings, lowercase hyphenated)
  *   K-Batch, K-BatchStartTime, K-BatchEndTime, K-BatchVersion,
  *   K-CustomEventHash (decimal strings)
  *   K-Token (API key)
@@ -17,6 +17,10 @@
  * Plus, conditionally:
  *   K-Tester - only when a non-null, non-empty `testUser` is passed
  *
+ * K-InstallId is all-zero for a server-relay batch (a server-side event
+ * has no install identity, and an all-zero id is how the server
+ * recognizes one) and a real, non-zero id for a device SDK.
+ *
  * The transport never imposes a timeout. Callers that need one wire
  * an `AbortSignal` in via the `signal` arg.
  */
@@ -24,29 +28,30 @@
 import type { SendBatchArgs, SendBatchInput } from './types/sendBatch';
 
 import { assertIntInRange, assertNonZeroBytes, assertUint8Array } from '../encoding/assertions';
-import { guidBytesToString } from '../encoding/guid';
+import { uuidBytesToString } from '../encoding/uuid';
 import { LIMITS } from '../encoding/limits';
 import { assertHeaderValue } from './helpers/assertHeaderValue';
-import { CONTENT_TYPE_OCTET_STREAM, ENDPOINT_PATH, SDK_VERSION } from './helpers/constants';
+import { CONTENT_TYPE_OCTET_STREAM, ENDPOINT_PATH } from './helpers/constants';
 import { isAbortError } from './helpers/isAbortError';
 import { joinEndpoint } from './helpers/joinEndpoint';
 import { mergeExtraHeaders } from './helpers/mergeExtraHeaders';
 import { releaseResponseBody } from './helpers/releaseResponseBody';
+import { resolveSdkTag } from './helpers/sdkTag';
 import { resolveTransportFetch } from './transportFetch';
 
-/** Byte length of a single mixed-endian GUID buffer. */
-const GUID_SIZE = 16;
+/** Byte length of a single mixed-endian UUID buffer. */
+const UUID_SIZE = 16;
 
 /**
  * Validate every field of a `SendBatchInput` at the public boundary.
  *
- * `installId` and `dataSessionId` are checked twice: first for type
- * and length (`assertUint8Array`), then for the all-zero corruption
- * pattern (`assertNonZeroBytes`). An all-zero `installId` is a
- * ghost-identity signal on the server side, and an all-zero
- * `dataSessionId` is never legitimately produced by the SDK; failing
- * closed here guarantees the SDK never sends either even if an
- * upstream layer constructs a batch with a missing identifier.
+ * `dataSessionId` is checked twice: first for type and length
+ * (`assertUint8Array`), then for the all-zero corruption pattern
+ * (`assertNonZeroBytes`), which the SDK never legitimately produces.
+ * `installId` is only length-checked: an all-zero installId is the
+ * legitimate server-relay sentinel (a server-side event has no install
+ * identity), while a device SDK validates its install id non-zero at
+ * load time, so failing closed on zero here would reject relay batches.
  *
  * `userId` is only length-checked. Zero is the documented
  * "no developer-supplied user identity yet" marker on this wire
@@ -61,19 +66,23 @@ const GUID_SIZE = 16;
  * layer).
  */
 function validateSendBatchInput(batch: SendBatchInput): void {
+  /**
+   * No non-zero check: an all-zero installId is the legitimate
+   * server-relay sentinel (a server-side event has no install identity).
+   * A device SDK validates its install id non-zero at load time.
+   */
   assertUint8Array({
-    expectedLength: GUID_SIZE,
+    expectedLength: UUID_SIZE,
     fnName: 'sendBatch: batch.installId',
     value: batch.installId,
   });
-  assertNonZeroBytes({ bytes: batch.installId, fnName: 'sendBatch: batch.installId' });
   assertUint8Array({
-    expectedLength: GUID_SIZE,
+    expectedLength: UUID_SIZE,
     fnName: 'sendBatch: batch.userId',
     value: batch.userId,
   });
   assertUint8Array({
-    expectedLength: GUID_SIZE,
+    expectedLength: UUID_SIZE,
     fnName: 'sendBatch: batch.dataSessionId',
     value: batch.dataSessionId,
   });
@@ -131,13 +140,15 @@ interface BuildSendBatchHeadersArgs {
 }
 
 /**
- * Build the 11-or-12 headers (K-* plus `Content-Type`) for `POST /in`.
- * Header insertion order is pinned so byte-comparable wire-format
- * test vectors remain stable across builds.
+ * Build the K-* headers (plus `Content-Type`) for `POST /in`. Header
+ * insertion order is pinned so byte-comparable wire-format test vectors
+ * remain stable across builds. `K-InstallId` is always emitted (all-zero
+ * for a server-relay batch); `K-Tester` is added only when a tester is
+ * set.
  *
- * Assumes the caller has already run `validateSendBatchInput`, so
- * every GUID buffer is known to be 16 bytes and non-zero by the
- * time `guidBytesToString` runs here.
+ * Assumes the caller has already run `validateSendBatchInput`, so every
+ * UUID buffer is 16 bytes (and non-zero where required) by the time
+ * `uuidBytesToString` runs here.
  */
 function buildSendBatchHeaders({
   batch,
@@ -146,9 +157,9 @@ function buildSendBatchHeaders({
 }: BuildSendBatchHeadersArgs): Record<string, string> {
   const headers: Record<string, string> = {
     'Content-Type': CONTENT_TYPE_OCTET_STREAM,
-    'K-InstallId': guidBytesToString(batch.installId),
-    'K-Uid': guidBytesToString(batch.userId),
-    'K-DS': guidBytesToString(batch.dataSessionId),
+    'K-InstallId': uuidBytesToString(batch.installId),
+    'K-Uid': uuidBytesToString(batch.userId),
+    'K-DS': uuidBytesToString(batch.dataSessionId),
     'K-Batch': String(batch.batchNum),
     'K-BatchStartTime': String(batch.batchStartTime),
     'K-BatchEndTime': String(batch.batchEndTime),
@@ -163,7 +174,7 @@ function buildSendBatchHeaders({
     headers['K-Tester'] = testUser;
   }
   headers['K-Token'] = apiKey;
-  headers['K-SDK'] = SDK_VERSION;
+  headers['K-SDK'] = resolveSdkTag();
   return headers;
 }
 
@@ -173,11 +184,12 @@ function buildSendBatchHeaders({
  * @returns `true` on any 2xx response, `false` on non-2xx response or
  *   network error. Failures are intentionally collapsed into `false`
  *   so the send loop can treat them uniformly (retry next cycle).
- * @throws TypeError when any GUID buffer is not a 16-byte
- *   `Uint8Array`, when `installId` or `dataSessionId` is the
- *   all-zero corruption pattern (`userId` zero is the legitimate
- *   "no developer-supplied user" marker and is allowed), or when
- *   `batch.data` is not a `Uint8Array`.
+ * @throws TypeError when any UUID buffer is not a 16-byte
+ *   `Uint8Array`, when `dataSessionId` is the all-zero corruption
+ *   pattern (`installId` all-zero is the legitimate server-relay
+ *   sentinel, and `userId` zero is the legitimate "no developer-supplied
+ *   user" marker - both allowed), or when `batch.data` is not a
+ *   `Uint8Array`.
  * @throws RangeError when any of `batchNum`, `batchStartTime`,
  *   `batchEndTime`, `batchVersion`, `customEventsVersion` falls
  *   outside its wire-format integer range.
@@ -225,7 +237,7 @@ async function sendBatch(args: SendBatchArgs): Promise<boolean> {
   /**
    * `redirect: 'error'` forces `fetch` to reject on any 3xx
    * response. The transport carries `K-Token` (the API key) plus
-   * the install / user / data-session GUIDs in headers; default
+   * the install / user / data-session UUIDs in headers; default
    * redirect-following would forward those secrets to whatever URL
    * the response advertises. Fail closed instead.
    *

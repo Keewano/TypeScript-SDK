@@ -1,15 +1,15 @@
 /**
- * `.kwub` batch-file I/O on top of the `StorageAdapter` contract.
+ * Batch-file I/O on top of the `StorageAdapter` contract.
  *
  * Each batch is a single file at `${dir}/${batchEndTime}_${batchNum}.kwub`
- * with a 56-byte header, a payload of length `DataSize`, and a
- * 4-byte footer (CustomEventsVersion). Total file size is
- * `60 + DataSize` bytes. The layout follows the canonical wire format
- * so files produced by any compliant writer are interchangeable.
+ * whose byte content is produced and parsed by the active codec's
+ * container serializer. Persistence owns naming, listing, and storage
+ * I/O only; the container byte layout is the codec's concern, so this
+ * layer works unchanged for any batch encoding.
  *
  * Operations:
- * - `saveBatch` writes a batch to its canonical filename via the
- *   adapter's best-effort atomic `writeFile`.
+ * - `saveBatch` serializes a batch via the codec and writes it to its
+ *   canonical filename via the adapter's best-effort atomic `writeFile`.
  * - `loadBatch` reads a single file and returns `null` on missing /
  *   corrupted contents. The reader never throws: a corrupted batch
  *   collapses into a `null` result so the send loop can skip it.
@@ -20,148 +20,70 @@
  *
  * @example
  * ```ts
- * import { MemoryStorageAdapter, saveBatch, loadBatch } from '@keewano/core';
+ * import { BinaryCodec, MemoryStorageAdapter, saveBatch, loadBatch } from '@keewano/core';
  *
+ * const codec = new BinaryCodec();
  * const storage = new MemoryStorageAdapter();
  * const dir = 'batches';
- * const bytesWritten = await saveBatch({ storage, dir, batch });
- * const reloaded = await loadBatch({ storage, path: 'batches/100_5.kwub' });
+ * const bytesWritten = await saveBatch({ storage, dir, codec, batch });
+ * const reloaded = await loadBatch({ storage, path: 'batches/100_5.kwub', codec });
  * ```
  */
 
 import type {
   BatchFileInfo,
-  BatchRecord,
   DeleteBatchArgs,
   ListBatchesArgs,
   LoadBatchArgs,
   SaveBatchArgs,
   TotalBatchSizeArgs,
 } from './types/kfile';
+import type { EncodedBatch } from '../codec/types/codec';
 
 import { BATCH_FILE_EXTENSION, batchFilePath, parseBatchFilename } from './helpers/batchFilename';
-import { KFILE_FOOTER_SIZE, writeKFileFooter } from './helpers/kfileFooter';
-import {
-  CURRENT_BATCH_VERSION,
-  KFILE_HEADER_SIZE,
-  readKFileHeader,
-  writeKFileHeader,
-} from './helpers/kfileHeader';
 
 /**
  * Persist `batch` to `${dir}/${batchEndTime}_${batchNum}.kwub`. The
- * writer always emits the current batch-protocol version, regardless
- * of `batch.batchVersion` - the field exists for the LOAD path and
- * is intentionally ignored here (see `BatchRecord` JSDoc).
+ * byte content is whatever the codec's `serializeContainer` produces;
+ * for the binary codec that is the historical container format,
+ * byte-identical.
  *
- * @returns Total bytes written (header + payload + footer).
- * @throws TypeError when `batch.data`, `batch.userId`, or
- *   `batch.dataSessionId` is not a `Uint8Array` (caller passed a
- *   regular array or string instead - we want a clear diagnostic
- *   at the boundary instead of silent byte corruption from
- *   `Uint8Array.prototype.set` accepting ArrayLike inputs).
+ * @returns Total bytes written.
+ * @throws Whatever `serializeContainer` throws on malformed input
+ *   (wrong-typed identity buffers, out-of-range numeric fields) - a
+ *   clear diagnostic at the boundary instead of silent byte
+ *   corruption.
  */
-async function saveBatch({ storage, dir, batch }: SaveBatchArgs): Promise<number> {
-  if (!(batch.data instanceof Uint8Array)) {
-    throw new TypeError('saveBatch: batch.data must be a Uint8Array');
-  }
-  if (!(batch.userId instanceof Uint8Array)) {
-    throw new TypeError('saveBatch: batch.userId must be a Uint8Array');
-  }
-  if (!(batch.dataSessionId instanceof Uint8Array)) {
-    throw new TypeError('saveBatch: batch.dataSessionId must be a Uint8Array');
-  }
-  const header = writeKFileHeader({
-    batchVersion: CURRENT_BATCH_VERSION,
-    userId: batch.userId,
-    dataSessionId: batch.dataSessionId,
-    batchNum: batch.batchNum,
-    batchStartTime: batch.batchStartTime,
-    batchEndTime: batch.batchEndTime,
-    dataSize: batch.data.length,
-  });
-  const footer = writeKFileFooter(batch.customEventsVersion);
-  const total = KFILE_HEADER_SIZE + batch.data.length + KFILE_FOOTER_SIZE;
-  const bytes = new Uint8Array(total);
-  bytes.set(header, 0);
-  bytes.set(batch.data, KFILE_HEADER_SIZE);
-  bytes.set(footer, KFILE_HEADER_SIZE + batch.data.length);
+async function saveBatch({ storage, dir, codec, batch }: SaveBatchArgs): Promise<number> {
+  const bytes = codec.serializeContainer(batch);
   const path = batchFilePath({ dir, batchEndTime: batch.batchEndTime, batchNum: batch.batchNum });
   await storage.writeFile({ path, bytes });
-  return total;
+  return bytes.length;
 }
 
 /**
- * Read a `.kwub` file and parse it into a `BatchRecord`. Returns
- * `null` on:
- * - missing file,
- * - truncation (too short for header / payload / footer),
- * - bad FourCC,
- * - unsupported `BatchVersion`,
- * - inconsistent `DataSize` (negative or pointing past EOF).
- *
- * Collapsing every failure mode into a single `null` result keeps
- * the call sites simple - the sender loop just skips corrupted
- * batches instead of having to classify every parse error.
+ * Read a batch file and parse it via the codec. Returns `null` on a
+ * missing file or any corruption (`deserializeContainer` collapses
+ * every parse-failure mode into `null`), keeping call sites simple -
+ * the sender loop just skips corrupted batches instead of having to
+ * classify every parse error.
  */
-async function loadBatch({ storage, path }: LoadBatchArgs): Promise<BatchRecord | null> {
+async function loadBatch({ storage, path, codec }: LoadBatchArgs): Promise<EncodedBatch | null> {
   const bytes = await storage.readFile({ path });
   if (bytes === null) {
     return null;
   }
-  return decodeBatch(bytes);
-}
-
-/**
- * Pure in-memory decode of a `.kwub` byte buffer. Split out so the
- * `loadBatch` test can exercise corruption paths without dragging a
- * `StorageAdapter` fake along. Exported for the in-module conformance
- * tests only - it is deliberately NOT re-exported from the package
- * barrel, so the `.kwub` layout stays free to change.
- */
-function decodeBatch(bytes: Uint8Array): BatchRecord | null {
-  const header = readKFileHeader(bytes);
-  if (header === null) {
+  /**
+   * The Codec contract requires `deserializeContainer` to return
+   * `null` on corruption, but a non-conforming codec that throws must
+   * not break loadBatch's documented never-throws contract - collapse
+   * the throw into the same `null` the callers already handle.
+   */
+  try {
+    return codec.deserializeContainer(bytes);
+  } catch {
     return null;
   }
-  const payloadStart = KFILE_HEADER_SIZE;
-  const payloadEnd = payloadStart + header.dataSize;
-  const footerEnd = payloadEnd + KFILE_FOOTER_SIZE;
-  /**
-   * Require an exact length match instead of merely "at least enough".
-   * Trailing garbage past the declared footer means the file is either
-   * truncated mid-write, concatenated with foreign content, or carries
-   * a `dataSize` that disagrees with the on-disk length. Any of those
-   * makes the batch unsafe to ship, so reject it the same way as a
-   * short read.
-   */
-  if (footerEnd !== bytes.length) {
-    return null;
-  }
-  /**
-   * Slice the payload into an owned buffer so the caller can keep it
-   * past the lifetime of the parent `bytes` view (the storage adapter
-   * may reuse internal buffers between reads on some runtimes).
-   */
-  const data = bytes.slice(payloadStart, payloadEnd);
-  /**
-   * Footer is guaranteed to be exactly `KFILE_FOOTER_SIZE` bytes
-   * thanks to the exact-length guard above, so `readKFileFooter`
-   * cannot return `null` at this point and the non-null result is
-   * structurally enforced.
-   */
-  const footerView = new DataView(bytes.buffer, bytes.byteOffset + payloadEnd, KFILE_FOOTER_SIZE);
-  const customEventsVersion = footerView.getUint32(0, true);
-  return {
-    batchVersion: header.batchVersion,
-    userId: header.userId,
-    dataSessionId: header.dataSessionId,
-    batchNum: header.batchNum,
-    batchStartTime: header.batchStartTime,
-    batchEndTime: header.batchEndTime,
-    data,
-    customEventsVersion,
-  };
 }
 
 /**
@@ -171,9 +93,11 @@ function decodeBatch(bytes: Uint8Array): BatchRecord | null {
  * intermediate sort step.
  *
  * Files whose `fileSize` query returns `null` (vanished between
- * listing and stat) are silently dropped - the next pass will pick
- * them up if they reappear, or skip them permanently if they were a
- * concurrent removal.
+ * listing and stat) OR rejects (present but unreadable - EACCES /
+ * EIO / EMFILE on an SDK-owned file) are silently skipped - one bad
+ * file never throws out of here and hides every other valid batch
+ * from the ship / delete / cap passes. The next pass picks it up if
+ * it recovers.
  */
 async function listBatches({ storage, dir }: ListBatchesArgs): Promise<BatchFileInfo[]> {
   const names = await storage.listFiles({ dir, pattern: `*${BATCH_FILE_EXTENSION}` });
@@ -200,14 +124,24 @@ async function listBatches({ storage, dir }: ListBatchesArgs): Promise<BatchFile
       batchNum: parsed.batchNum,
     });
   }
-  const sizes = await Promise.all(
+  /**
+   * `allSettled`, not `all`: a single rejecting `fileSize` (a present
+   * but unreadable .kwub) would otherwise reject the whole listing and
+   * starve ship / delete / cap of every other valid batch. A rejected
+   * or null size skips just that one entry.
+   */
+  const sizes = await Promise.allSettled(
     parsedEntries.map((entry) => storage.fileSize({ path: entry.path })),
   );
   const out: BatchFileInfo[] = [];
   for (let i = 0; i < parsedEntries.length; i += 1) {
-    const size = sizes[i];
+    const settled = sizes[i];
     const entry = parsedEntries[i];
-    if (size === null || size === undefined || entry === undefined) {
+    if (entry === undefined || settled?.status !== 'fulfilled') {
+      continue;
+    }
+    const size = settled.value;
+    if (size === null || size === undefined) {
       continue;
     }
     out.push({
@@ -249,4 +183,4 @@ async function totalBatchSize({ storage, dir }: TotalBatchSizeArgs): Promise<num
   return total;
 }
 
-export { decodeBatch, deleteBatch, listBatches, loadBatch, saveBatch, totalBatchSize };
+export { deleteBatch, listBatches, loadBatch, saveBatch, totalBatchSize };

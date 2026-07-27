@@ -8,6 +8,12 @@
 
 export type { SendBatchArgs, SendBatchInput } from './types/sendBatch';
 export type {
+  Transport,
+  TransportContext,
+  TransportResult,
+  TransportSendArgs,
+} from './types/transport';
+export type {
   CustomEventMapStatus,
   GetCustomEventMapStatusArgs,
   RegisterCustomEventMapArgs,
@@ -19,11 +25,16 @@ export {
   CONTENT_TYPE_OCTET_STREAM,
   ENDPOINT_PATH,
   KEEWANO_DEFAULT_BASE_URL,
-  SDK_VERSION,
 } from './helpers/constants';
 export { isAbortError } from './helpers/isAbortError';
 export { joinEndpoint } from './helpers/joinEndpoint';
+export { configureSdkPlatform } from './helpers/sdkTag';
 
+export { BinaryTransport } from './binaryTransport';
 export { getCustomEventMapStatus, registerCustomEventMap } from './customEventMap';
 export { sendBatch } from './sendBatch';
-export { configureTransportFetch, resolveTransportFetch } from './transportFetch';
+export {
+  configureTransportFetch,
+  isTransportFetchConfigured,
+  resolveTransportFetch,
+} from './transportFetch';

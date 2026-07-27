@@ -9,7 +9,7 @@
  * - it falls back to a non-cryptographic RNG instead of throwing.
  *
  * The fallback is deliberate: these bytes only ever back analytics
- * identifiers (install / session GUIDs and scratch-file suffixes), where
+ * identifiers (install / session UUIDs and scratch-file suffixes), where
  * uniqueness is the requirement and cryptographic unpredictability is
  * not. Degrading gracefully keeps the SDK install-and-go - a host does
  * not have to add a crypto polyfill just to boot - which is the whole

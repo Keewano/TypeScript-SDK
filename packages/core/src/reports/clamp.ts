@@ -19,6 +19,14 @@ const UINT32_MAX = 0xffffffff;
 const INT32_NON_NEGATIVE_MAX = 0x7fffffff;
 
 /**
+ * Largest finite value representable as IEEE 754 single precision. A
+ * finite JS double above this rounds to +Infinity when encoded via
+ * `writeFloat32LE`, so monetary clamps saturate here instead of
+ * emitting an Infinity bit pattern the server would reject.
+ */
+const FLOAT32_MAX = 3.4028234663852886e38;
+
+/**
  * Coerce `value` into the inclusive `[0, UINT8_MAX]` integer range.
  * Same fail-closed contract as {@link clampUint16}: a TS host that
  * goes around the type system (any-typed call site, JS-only host)
@@ -58,15 +66,19 @@ function clampUint32(value: number): number {
 /**
  * Coerce `value` into a non-negative finite float for monetary
  * payloads (localized purchase / revenue amounts written as float32
- * LE). NaN, +/-Infinity, and negative numbers collapse to `0` so the
- * wire never carries an invalid IEEE 754 bit pattern the server-side
- * parser would reject (which would drop the whole batch).
+ * LE). NaN, +/-Infinity, and negative numbers collapse to `0`, and a
+ * finite double above the float32 maximum saturates at it, so the
+ * wire never carries an invalid IEEE 754 bit pattern (including the
+ * Infinity a too-large finite value would otherwise encode to) that
+ * the server-side parser would reject (which would drop the whole
+ * batch).
  *
- * @returns `0` for non-finite / negative input; `value` otherwise.
+ * @returns `0` for non-finite / negative input; {@link FLOAT32_MAX}
+ *   when above the float32 range; `value` otherwise.
  */
 function clampNonNegativeFloat(value: number): number {
   if (!Number.isFinite(value) || value < 0) return 0;
-  return value;
+  return Math.min(value, FLOAT32_MAX);
 }
 
 /**

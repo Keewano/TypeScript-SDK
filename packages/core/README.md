@@ -4,7 +4,7 @@ Platform-agnostic core for the Keewano TypeScript SDK: wire-protocol encoding, t
 
 ## Documentation
 
-See the [documentation](../../docs/README.md). Install a platform package instead of this one - [`@keewano/react-native-sdk`](../react-native-sdk/README.md) (bare React Native) or [`@keewano/react-native-expo-sdk`](../react-native-expo-sdk/README.md) (Expo).
+See the [documentation](https://github.com/Keewano/TypeScript-SDK/blob/main/docs/README.md). Install a platform package instead of this one - [`@keewano/react-native-sdk`](https://www.npmjs.com/package/@keewano/react-native-sdk) (bare React Native) or [`@keewano/react-native-expo-sdk`](https://www.npmjs.com/package/@keewano/react-native-expo-sdk) (Expo).
 
 ## What's inside
 

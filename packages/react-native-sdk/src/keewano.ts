@@ -17,20 +17,43 @@ import type { SdkRuntime } from './types/runtime';
 import {
   KEEWANO_DEFAULT_BASE_URL,
   KEventDispatcher,
+  configureSdkPlatform,
   consentGate,
   deleteBatch,
-  guidToBytes,
+  getInstallId,
+  hasControlChar,
+  isByteString,
+  uuidToBytes,
   listBatches,
   loadOrInitConsentState,
   loadOrInitIdentifiers,
   loadTestUserName,
-  newGuid,
+  logError,
+  markAsTestUser,
+  newUuid,
+  persistAccumulatedBatch,
+  reportABTestGroupAssignment,
+  reportAdItemsGranted,
+  reportAdOffered,
+  reportAdRevenue,
+  reportCustomEvent,
+  reportGameLanguage,
+  reportInAppPurchase,
+  reportInAppPurchaseItemsGranted,
+  reportInstallCampaign,
+  reportItemsExchange,
+  reportItemsReset,
+  reportOnboardingMilestone,
+  reportSubscriptionItemsGranted,
+  reportSubscriptionRevenue,
+  reportUserRegisteredBeforeSDKIntegration,
+  runSendLoop,
   setConsent as setConsentCore,
+  setUserId,
 } from '@keewano/core';
 
 import { defaultPlatformAdapter } from './platformDefaults';
 import { resetSceneCursor } from './navigation/sceneCursor';
-import { persistAccumulatedBatch, runSendLoop } from './sendLoop';
 import { attachInitialEventsTracker, attachTrackers, detachAllTrackers } from './trackerPipeline';
 import {
   allocBatchNum,
@@ -46,47 +69,47 @@ import {
 } from './runtime';
 import { BareRNStorageAdapter } from './storage';
 import {
-  logError,
-  reportAdItemsGranted,
-  reportAdOffered,
-  reportAdRevenue,
-  reportGameLanguage,
-  reportInAppPurchase,
-  reportInAppPurchaseItemsGranted,
-  reportInstallCampaign,
-  reportItemsExchange,
-  reportItemsReset,
-  reportSubscriptionItemsGranted,
-  reportSubscriptionRevenue,
-} from './api/monetization';
-import { reportCustomEvent } from './api/customEvents';
-import {
-  reportABTestGroupAssignment,
   reportButtonClick,
-  reportOnboardingMilestone,
   reportSceneLoaded,
   reportSceneUnloaded,
   reportWindowClose,
   reportWindowOpen,
 } from './api/ui';
-import {
-  getInstallId,
-  markAsTestUser,
-  reportUserRegisteredBeforeSDKIntegration,
-  setUserId,
-} from './api/identity';
 
 /** Directory name (relative to the storage adapter root) under which `.kwub` batch files live. */
 const BATCHES_DIR = 'keewano';
 
 /**
+ * In-flight shutdown promise. `shutdown()` publishes its teardown
+ * here so a concurrent second shutdown joins the same teardown
+ * instead of double-swapping the dispatcher buffers, and `init()`
+ * sequences behind it so a boot requested mid-teardown installs a
+ * fresh runtime AFTER the old one is fully cleared (mirroring the
+ * reverse sequencing where shutdown awaits an in-flight init).
+ */
+let activeShutdownPromise: Promise<void> | null = null;
+
+/**
  * Boot the SDK. Resolves once the runtime is installed and the
  * background send loop has been kicked off. Re-init is tolerated:
  * a duplicate call logs a warning and awaits the in-flight promise.
- * An empty `apiKey` short-circuits with `console.error` so the
+ * An init requested while a `shutdown()` is still in flight waits
+ * for the teardown to finish, then boots fresh - otherwise it would
+ * observe the not-yet-cleared runtime, return the stale init
+ * promise, and the concluding teardown would kill the session the
+ * caller believes it just started. An empty or malformed `apiKey`
+ * (surrounding whitespace, control characters, non-ByteString
+ * characters) short-circuits with `console.error` so the
  * misconfiguration is visible and the loop never starts.
  */
 async function init(config: KeewanoConfig): Promise<void> {
+  if (activeShutdownPromise !== null) {
+    try {
+      await activeShutdownPromise;
+    } catch {
+      /** Teardown failed but the runtime is cleared; boot fresh anyway. */
+    }
+  }
   if (isInitialized() || isInitializing()) {
     console.warn('Keewano.init: SDK is already initialized; ignoring re-init.');
     const pending = getInitPromise();
@@ -103,6 +126,24 @@ async function init(config: KeewanoConfig): Promise<void> {
      * read, emitting a phantom SCENE_UNLOADED for a scene this session
      * never loaded.
      */
+    resetSceneCursor();
+    return;
+  }
+  /**
+   * Reject a malformed apiKey at the boundary instead of letting the
+   * send loop discover it: the key travels as the `K-Token` HTTP
+   * header, and surrounding whitespace, ASCII control characters, or
+   * non-ByteString characters fail the transport's header-value
+   * check on every ship attempt, permanently stalling delivery while
+   * batches pile up on disk. Same scene-buffer reset as the
+   * empty-key branch above (this returns before startInit too).
+   */
+  if (
+    config.apiKey !== config.apiKey.trim() ||
+    hasControlChar(config.apiKey) ||
+    !isByteString(config.apiKey)
+  ) {
+    console.error('Keewano.init: invalid apiKey; SDK will not start the send loop.');
     resetSceneCursor();
     return;
   }
@@ -172,6 +213,8 @@ async function init(config: KeewanoConfig): Promise<void> {
  * shutdown aborts its signal.
  */
 async function startInit(config: KeewanoConfig): Promise<void> {
+  /** Tag every outbound request as React Native; there is no default. */
+  configureSdkPlatform('ReactNative');
   const storage = config.storage ?? new BareRNStorageAdapter();
   const platform = config.platform ?? defaultPlatformAdapter();
   const endpoint = config.endpoint ?? KEEWANO_DEFAULT_BASE_URL;
@@ -187,7 +230,7 @@ async function startInit(config: KeewanoConfig): Promise<void> {
     loadOrInitConsentState({ storage, requirePlayerConsent }),
     loadTestUserName({ storage }),
   ]);
-  const dataSessionId = guidToBytes(newGuid());
+  const dataSessionId = uuidToBytes(newUuid());
   const initialTimestamp = Math.floor(Date.now() / 1000);
   const dispatcher = new KEventDispatcher({
     installId: identifiers.installId,
@@ -321,13 +364,30 @@ function startSendLoop(runtime: SdkRuntime): void {
  * its exit so the dispatcher is no longer racing a live tick, then
  * flush any in-memory events to disk, then detach trackers, then
  * clear the runtime singleton. Idempotent - shutdown without a
- * prior init is a no-op.
+ * prior init is a no-op, and a shutdown requested while another is
+ * already in flight joins that teardown instead of running a second
+ * one (two concurrent teardowns would double-swap the dispatcher
+ * and corrupt the sending batch's slice views).
  *
  * Persisting in-memory events on shutdown (instead of dropping them
  * with the dispatcher) is what keeps the last events of a session
  * from being lost when the host quits.
  */
 async function shutdown(): Promise<void> {
+  if (activeShutdownPromise !== null) {
+    return activeShutdownPromise;
+  }
+  const promise = performShutdown();
+  activeShutdownPromise = promise;
+  try {
+    await promise;
+  } finally {
+    activeShutdownPromise = null;
+  }
+}
+
+/** The actual teardown sequence behind {@link shutdown}'s re-entrancy guard. */
+async function performShutdown(): Promise<void> {
   /**
    * If an init() is in flight, wait for it to install the runtime
    * (or fail) before reading state. Otherwise shutdown can return
@@ -513,12 +573,11 @@ async function setUserConsent(granted: boolean): Promise<void> {
    * until the next loop tick (up to `idleMs`) or until `shutdown()`.
    * Purge both layers AND abort the in-flight send the moment the
    * gate flips to `'delete'` so the privacy promise is observable
-   * as soon as the call returns. The loop is then restarted with a
-   * fresh AbortController so a later opt-in via consent flipping
-   * back to a sendable state (within the same install / session)
-   * still has a live sender. Best-effort: reset throws cannot mask
-   * the disk cleanup; a disk failure is handled internally by
-   * `deleteQueuedBatches`.
+   * as soon as the call returns. The loop is NOT restarted: `Denied`
+   * is terminal, so a fresh sender would only spin in the `'delete'`
+   * branch (see the note where `sendLoopPromise` is nulled below).
+   * Best-effort: reset throws cannot mask the disk cleanup; a disk
+   * failure is handled internally by `deleteQueuedBatches`.
    */
   if (consentGate(next) === 'delete') {
     /**

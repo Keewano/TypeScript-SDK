@@ -1,16 +1,17 @@
 {
   "name": "@keewano/core",
-  "version": "1.0.0-0",
+  "version": "1.0.0-41",
   "description": "Platform-agnostic core for Keewano TypeScript SDK (encoding, dispatcher, transport, identity, types).",
   "main": "./dist/src/index.js",
   "types": "./dist/src/index.d.ts",
   "exports": {
     ".": {
-      "default": "./dist/src/index.js",
-      "require": "./dist/src/index.js",
+      "types": "./dist/src/index.d.ts",
       "import": "./dist/src/index.js",
-      "types": "./dist/src/index.d.ts"
-    }
+      "require": "./dist/src/index.js",
+      "default": "./dist/src/index.js"
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "dist",
@@ -28,5 +29,12 @@
     "sdk",
     "core"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Keewano/TypeScript-SDK.git",
+    "directory": "packages/core"
+  },
+  "homepage": "https://github.com/Keewano/TypeScript-SDK#readme",
+  "bugs": "https://github.com/Keewano/TypeScript-SDK/issues",
   "license": "MIT"
 }

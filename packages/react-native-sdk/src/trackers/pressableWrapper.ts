@@ -22,9 +22,7 @@ import {
   forwardRef,
 } from 'react';
 
-import { KEvents } from '@keewano/core';
-
-import { truncateString } from '../api/reportHelpers';
+import { KEvents, truncateString } from '@keewano/core';
 
 import { pickButtonName } from './pickButtonName';
 import { stampNowOnDispatcher } from './stampNow';

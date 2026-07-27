@@ -9,8 +9,8 @@ happens under the hood, and why it is cheap.
 
 Events are encoded as a compact binary stream, not JSON. Numbers use variable-length
 encoding and records are packed tightly, so payloads stay small and there is no
-JSON serialization cost on the device. The format is identical to the Keewano Unity
-SDK, so the same backend ingests data from both.
+JSON serialization cost on the device. The format is shared across all Keewano SDKs,
+so one backend ingests data from all of them.
 
 ## Batches
 
@@ -22,7 +22,7 @@ disk before any network attempt (see [Offline Analytics](offline.md)).
 ## Delivery
 
 A batch is sent as a compact binary HTTP body; the batch metadata (ids, timestamps,
-counts) travels in `K-*` HTTP headers alongside it. The send loop ships batches
+the batch sequence number) travels in `K-*` HTTP headers alongside it. The send loop ships batches
 oldest-first and deletes each one only after the backend confirms receipt.
 
 ## Custom-event schema

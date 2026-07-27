@@ -34,8 +34,14 @@ Keewano.setUserConsent(false);
 
 > [!IMPORTANT]
 > Denial is real deletion: when the player declines, the queued on-disk batches are
-> removed, not just held. You can call `setUserConsent` again later if the player
-> changes their mind.
+> removed, not just held. The first decision is final for this install: once the state
+> is Granted or Denied, later `setUserConsent` calls are no-ops.
+
+> [!NOTE]
+> A consent decision takes effect immediately in memory and is saved to disk
+> best-effort. In the rare case that write fails, the decision still holds for the
+> current session; the next launch falls back to `Pending` (the conservative default)
+> and re-prompts.
 
 ## What is stored on the device
 

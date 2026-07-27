@@ -18,6 +18,7 @@ Each package lives under `packages/`:
 - `@keewano/core` - platform-agnostic core
 - `@keewano/react-native-sdk` - bare React Native SDK
 - `@keewano/react-native-expo-sdk` - Expo SDK
+- `@keewano/node-sdk` - Node.js server relay SDK
 - `@keewano/codegen` - custom-events code generator
 
 ---

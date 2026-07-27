@@ -7,11 +7,11 @@
  * overload.
  */
 
-import type { CustomEventTypeValue, KEventDispatcher } from '@keewano/core';
+import type { CustomEventTypeValue } from '../events';
+import type { KEventDispatcher } from '../dispatcher';
 import type { ReportCustomEventArgs } from './types/customEvents';
 
-import { CustomEventType } from '@keewano/core';
-
+import { CustomEventType } from '../events';
 import { runWhenReady, truncateString } from './reportHelpers';
 
 /** First wire id assigned to custom events; the Nth declared event is 2500 + N. */
@@ -41,7 +41,10 @@ function emitByType(
         str: typeof value === 'string' ? truncateString(value) : (value as string),
       });
       return;
+    // UnsignedInt and PriceInUSDCents share the same uint32 LE payload
+    // encoding; only their wire type tag (in the custom-event map) differs.
     case CustomEventType.UnsignedInt:
+    case CustomEventType.PriceInUSDCents:
       dispatcher.addEventUint32({ eventId, value: value as number });
       return;
     case CustomEventType.Bool:
@@ -58,9 +61,6 @@ function emitByType(
       dispatcher.addEventUint16x2({ eventId, x: vec.x, y: vec.y });
       return;
     }
-    case CustomEventType.PriceInUSDCents:
-      dispatcher.addEventInt32({ eventId, value: value as number });
-      return;
   }
 }
 

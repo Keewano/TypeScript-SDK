@@ -38,7 +38,7 @@ module.exports = {
     {
       // `getSecureRandomBytes` falls back to `Math.random` only when the
       // runtime has no Web Crypto (React Native / Hermes without a
-      // polyfill). The bytes back analytics install / session GUIDs,
+      // polyfill). The bytes back analytics install / session UUIDs,
       // where uniqueness - not cryptographic unpredictability - is the
       // requirement, so a non-crypto RNG is an intentional, documented
       // degradation that keeps the SDK install-and-go.

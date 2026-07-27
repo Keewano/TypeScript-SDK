@@ -10,7 +10,7 @@
 export type { BuildResult } from './types/buildCustomEventSet';
 export type { CliArgs, RunOnceArgs } from './types/cli';
 export type { CustomEventTypeValue, ParsedEvent, RawEventFile } from './types/event';
-export type { EmitArgs } from './types/emit';
+export type { EmitArgs, EmitTarget } from './types/emit';
 export type { ParseArgs, ParseResult } from './types/parse';
 
 export {

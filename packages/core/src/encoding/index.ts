@@ -1,5 +1,5 @@
 /**
- * Encoding primitives for the SDK wire protocol: varint, GUID, FNV-1a,
+ * Encoding primitives for the SDK wire protocol: varint, UUID, FNV-1a,
  * and the growable binary stream they compose into. Internal helpers
  * (`assertions.ts`, `random.ts`) are intentionally not re-exported.
  *
@@ -13,5 +13,5 @@
 export type { ReadVarintUArgs, ReadVarintUResult, WriteVarintUArgs } from './varint';
 export { BinaryStream } from './binaryStream';
 export { fnv1a32 } from './fnv1a';
-export { guidBytesToString, guidToBytes, newGuid } from './guid';
+export { bigintToUuidBytes, uuidBytesToString, uuidToBytes, newUuid } from './uuid';
 export { readVarintU, writeVarintU } from './varint';

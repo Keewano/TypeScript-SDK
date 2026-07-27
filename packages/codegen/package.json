@@ -1,16 +1,17 @@
 {
   "name": "@keewano/codegen",
-  "version": "1.0.0-0",
+  "version": "1.0.0-41",
   "description": "Keewano custom-events codegen CLI: turns per-event JSON definitions into a type-safe generated TypeScript module.",
   "main": "./dist/src/index.js",
   "types": "./dist/src/index.d.ts",
   "exports": {
     ".": {
-      "default": "./dist/src/index.js",
-      "require": "./dist/src/index.js",
+      "types": "./dist/src/index.d.ts",
       "import": "./dist/src/index.js",
-      "types": "./dist/src/index.d.ts"
-    }
+      "require": "./dist/src/index.js",
+      "default": "./dist/src/index.js"
+    },
+    "./package.json": "./package.json"
   },
   "bin": {
     "keewano-codegen": "./bin/keewano-codegen.cjs"
@@ -35,9 +36,16 @@
     "custom-events",
     "cli"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Keewano/TypeScript-SDK.git",
+    "directory": "packages/codegen"
+  },
+  "homepage": "https://github.com/Keewano/TypeScript-SDK#readme",
+  "bugs": "https://github.com/Keewano/TypeScript-SDK/issues",
   "dependencies": {
     "@keewano/core": "*",
-    "ajv": "8.17.1",
+    "ajv": "8.20.0",
     "chokidar": "3.6.0",
     "pako": "2.1.0"
   },

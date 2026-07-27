@@ -162,10 +162,17 @@ async function loadOrInitConsentState(args: LoadOrInitConsentStateArgs): Promise
  * still `Pending` but the caller claims to be terminal (the
  * caller's `current` is wrong; the caller must re-prompt).
  *
+ * The persist write is best-effort: if it throws (disk full / I/O)
+ * the transition is still returned so the caller applies it in memory
+ * this session. A Deny must take effect - stop sending and purge -
+ * even when it cannot be written, rather than fail open by staying
+ * Pending. The choice is then not durable: the next launch re-reads
+ * the still-Pending file and re-prompts, the conservative default.
+ *
  * @returns The state after the call: the persisted value when one
  *   exists (terminal OR pending), `current` for a non-Pending no-op
- *   on a fresh-install disk, or the new `Granted`/`Denied` after a
- *   successful transition.
+ *   on a fresh-install disk, or the new `Granted`/`Denied` after the
+ *   transition (returned even if the persist write failed).
  */
 async function setConsent(args: SetConsentArgs): Promise<ConsentState> {
   const { storage, current, granted } = args;
@@ -192,7 +199,19 @@ async function setConsent(args: SetConsentArgs): Promise<ConsentState> {
         return current;
       }
       const next = granted ? ConsentState.Granted : ConsentState.Denied;
-      await persistConsentState({ storage, state: next });
+      try {
+        await persistConsentState({ storage, state: next });
+      } catch (err: unknown) {
+        /**
+         * Persisting the transition failed (disk full / I/O). Still
+         * return `next` so the caller applies the decision in memory
+         * this session: a Deny must stop sending and purge even when
+         * it cannot be written, rather than fail open by staying
+         * Pending. Not durable - the next launch re-reads the still-
+         * Pending file and re-prompts - so surface the failure.
+         */
+        console.error('Keewano: consent persistence failed.', err);
+      }
       return next;
     },
   });

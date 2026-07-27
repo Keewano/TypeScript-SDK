@@ -33,7 +33,8 @@ much was dropped, so your data stays consistent rather than silently truncated.
 ## Clean shutdown
 
 If you stop the SDK explicitly, `shutdown` flushes anything still in memory to disk
-first, so it ships on the next launch.
+first, so it ships on the next launch. (On the Node relay there is nothing to flush:
+every batch is already on disk once `reportUserBatch` resolves.)
 
 ```typescript
 await Keewano.shutdown();

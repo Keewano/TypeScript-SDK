@@ -35,6 +35,7 @@ const USAGE = [
   'Options:',
   `  --input <dir>     Source directory of *.json event files (default: ./${CLI_DEFAULTS.INPUT_DIR})`,
   `  --output <file>   Destination .ts file (default: <input>/${CLI_DEFAULTS.GENERATED_FILE_NAME})`,
+  '  --target <sdk>    Target SDK: react-native (default), expo, or node',
   '  --watch           Watch input dir for changes and re-emit on save',
   '  --help            Print this help and exit',
   '  --version         Print package version and exit',

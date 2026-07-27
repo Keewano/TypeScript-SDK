@@ -11,19 +11,15 @@
  * identity state and persist it best-effort.
  */
 
+import { bigintToUuidBytes, uuidBytesToString, uuidToBytes } from '../encoding';
+import { KEvents } from '../events';
 import {
-  GUID_SIZE,
-  KEvents,
-  guidBytesToString,
-  guidToBytes,
-  hasControlChar,
-  isByteString,
   isPreSdkRegistered,
   markPreSdkRegistered,
   persistIdentifiers,
   persistTestUserName,
-} from '@keewano/core';
-
+  TEST_USER_MAX_LENGTH,
+} from '../identity';
 import {
   enqueuePreInit,
   getInitPromise,
@@ -31,9 +27,10 @@ import {
   isInitialized,
   isInitializing,
 } from '../runtime';
+import { hasControlChar, isByteString } from '../validation';
 
 /**
- * Return the persisted install GUID. Awaits the in-flight init
+ * Return the persisted install UUID. Awaits the in-flight init
  * promise so callers that race the boot do not see an empty buffer.
  *
  * @returns Lowercase hyphenated `"D"` format string
@@ -43,13 +40,13 @@ async function getInstallId(): Promise<string> {
   const pending = getInitPromise();
   if (pending !== null) await pending;
   const runtime = getRuntime();
-  return guidBytesToString(runtime.installId);
+  return uuidBytesToString(runtime.installId);
 }
 
 /**
  * Assign the developer-supplied user identity. Accepts either a
- * lowercase hyphenated GUID string or a `bigint` (packed into the
- * last 8 bytes via {@link bigintToGuidBytes}). Queued when called
+ * lowercase hyphenated UUID string or a `bigint` (packed into the
+ * last 8 bytes via {@link bigintToUuidBytes}). Queued when called
  * before init.
  *
  * In-memory state (dispatcher + `runtime.userId`) is updated
@@ -58,15 +55,29 @@ async function getInstallId(): Promise<string> {
  * block the host; persistence failure is logged via
  * `console.error` (the host can re-call `setUserId` to retry).
  *
- * GUID parse errors are surfaced eagerly: the parse runs in the
+ * UUID parse errors are surfaced eagerly: the parse runs in the
  * caller frame BEFORE any queueing, so an invalid string variant
  * throws synchronously regardless of init state.
  *
- * @throws RangeError when the string variant is not a 36-char
- *   hyphenated GUID.
+ * @throws TypeError when the string variant is not a 36-char
+ *   hyphenated UUID.
+ * @throws RangeError when the bigint variant is negative or
+ *   exceeds uint64.
+ * @throws Error when the id resolves to the all-zero UUID, the
+ *   "no user" sentinel the install starts with.
  */
 function setUserId(userId: string | bigint): void {
-  const bytes = typeof userId === 'bigint' ? bigintToGuidBytes(userId) : guidToBytes(userId);
+  const bytes = typeof userId === 'bigint' ? bigintToUuidBytes(userId) : uuidToBytes(userId);
+  /**
+   * Reject the all-zero UUID. It is the "user not set" sentinel the
+   * install starts with, so assigning it would silently demote a real
+   * user back to anonymous with no error. The relay surface rejects
+   * the same value; this mirrors that guard. Runs in the caller frame
+   * (before any queueing) so the misuse throws synchronously.
+   */
+  if (bytes.every((byte) => byte === 0)) {
+    throw new Error('Keewano.setUserId: userId is the empty UUID.');
+  }
   const op = (): void => {
     const runtime = getRuntime();
     runtime.dispatcher.setUserId(bytes);
@@ -114,9 +125,10 @@ function setUserId(userId: string | bigint): void {
  * `drainPreInitQueue`, where the throw is swallowed and the host
  * sees apparent success followed by a silent drop.
  *
- * @throws TypeError when `name` is empty, contains any HTTP-header
- *   control character (C0 controls U+0000-U+001F plus DEL U+007F),
- *   or contains a code point above 0xFF.
+ * @throws TypeError when `name` is empty, longer than
+ *   `TEST_USER_MAX_LENGTH`, contains any HTTP-header control
+ *   character (C0 controls U+0000-U+001F plus DEL U+007F), or
+ *   contains a code point above 0xFF.
  */
 function markAsTestUser(name: string): void {
   /**
@@ -132,6 +144,18 @@ function markAsTestUser(name: string): void {
   }
   if (!isByteString(name)) {
     throw new TypeError('Keewano.markAsTestUser: non-ByteString character.');
+  }
+  /**
+   * Bound the length to the same ceiling the persistence layer
+   * enforces. Without this the dispatcher would hold an oversized name
+   * and ship it in the K-Tester header for the whole session, while
+   * persistTestUserName silently drops it on disk - so the marker
+   * would vanish on the next launch and a huge header value would
+   * travel until then. Rejecting here keeps the in-memory and on-disk
+   * views in agreement.
+   */
+  if (name.length > TEST_USER_MAX_LENGTH) {
+    throw new TypeError('Keewano.markAsTestUser: tester name too long.');
   }
   const op = (): void => {
     const runtime = getRuntime();
@@ -172,14 +196,18 @@ async function reportUserRegisteredBeforeSDKIntegration(date: Date): Promise<voi
    * instead of the silent-drop the JSDoc above promises. NaN slips
    * past a naive `> Date.now()` check (every comparison with NaN is
    * false), and a future registration timestamp is always a host
-   * bug. The event is one-shot - a bad emission would burn the
-   * marker irreversibly - so silent drop is the right policy.
+   * bug. A pre-1970 date (negative epoch) is rejected too: the event
+   * serializes to a uint32 Unix-seconds field, so a negative value
+   * would make addEventDateTime throw AFTER the one-shot marker is
+   * already on disk, permanently losing the report. The event is
+   * one-shot - a bad emission would burn the marker irreversibly - so
+   * silent drop is the right policy.
    */
   if (!(date instanceof Date)) {
     return;
   }
   const timestampMs = date.getTime();
-  if (!Number.isFinite(timestampMs) || timestampMs > Date.now()) {
+  if (!Number.isFinite(timestampMs) || timestampMs < 0 || timestampMs > Date.now()) {
     return;
   }
   const pending = getInitPromise();
@@ -219,32 +247,6 @@ async function reportUserRegisteredBeforeSDKIntegration(date: Date): Promise<voi
       runtime.preSdkInFlight = null;
     }
   }
-}
-
-/**
- * Pack a bigint into the last 8 bytes of an otherwise-zero 16-byte
- * GUID buffer. The first 8 bytes remain zero; the server treats this
- * layout as a "compact integer userId" rather than a regular GUID,
- * per the documented compact-integer userId layout.
- *
- * Rejects out-of-range bigints up front instead of silently wrapping
- * via `BigInt.asUintN(64, value)`. Wrapping would alias distinct
- * caller IDs onto the same persisted userId (a negative bigint and
- * its `mod 2^64` positive counterpart collapse to identical bytes),
- * which produces hard-to-debug identity collisions across restarts.
- *
- * @returns 16-byte buffer with bytes 0..7 = 0 and bytes 8..15 = the
- *   bigint encoded as uint64 little-endian.
- * @throws RangeError when `value` is negative or above uint64 max.
- */
-function bigintToGuidBytes(value: bigint): Uint8Array {
-  if (value < 0n || value > 0xffffffffffffffffn) {
-    throw new RangeError('Keewano.setUserId: bigint must fit in uint64.');
-  }
-  const bytes = new Uint8Array(GUID_SIZE);
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  view.setBigUint64(GUID_SIZE / 2, value, true);
-  return bytes;
 }
 
 export { getInstallId, markAsTestUser, reportUserRegisteredBeforeSDKIntegration, setUserId };

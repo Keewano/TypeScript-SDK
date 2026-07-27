@@ -48,8 +48,8 @@ Keewano.reportInAppPurchaseItemsGranted({
 ```
 
 > [!NOTE]
-> Each item `count` is an unsigned 32-bit integer (0 to 4,294,967,295). Out-of-range
-> or invalid values are clamped, never dropped, so a bad count can never corrupt the
+> Each item `count` is an unsigned 32-bit integer (0 to 4,294,967,295). An out-of-range
+> count is clamped into range, never dropped, so a bad count can never corrupt the
 > rest of the batch.
 
 ## When to call

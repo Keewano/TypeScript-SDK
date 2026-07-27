@@ -18,7 +18,7 @@
 
 import type { KeewanoApi, KeewanoConfig } from '@keewano/react-native-sdk';
 
-import { configureTransportFetch } from '@keewano/core';
+import { configureTransportFetch, isTransportFetchConfigured } from '@keewano/core';
 import { Keewano as BareKeewano } from '@keewano/react-native-sdk';
 
 import { expoPlatformAdapter } from './platform';
@@ -30,12 +30,16 @@ async function init(config: KeewanoConfig): Promise<void> {
    * Route the transport through expo/fetch when available: its native
    * client preserves the Content-Encoding request header that RN's
    * legacy fetch strips, which is what lets POST /custom register a
-   * gzip event map (the SDK then sends byte-identically to Unity). A
-   * no-op on Expo < 52, where the transport stays on the global fetch.
+   * gzip event map. A no-op on Expo < 52, where the transport stays
+   * on the global fetch - and a no-op when the host already installed
+   * its own transport fetch (cert pinning, proxying): the host's
+   * choice must never be silently overwritten by our default.
    */
-  const expoFetch = loadExpoFetch();
-  if (expoFetch !== null) {
-    configureTransportFetch(expoFetch);
+  if (!isTransportFetchConfigured()) {
+    const expoFetch = loadExpoFetch();
+    if (expoFetch !== null) {
+      configureTransportFetch(expoFetch);
+    }
   }
   const withExpoDefaults: KeewanoConfig = { ...config };
   if (config.storage === undefined) {

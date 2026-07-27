@@ -4,7 +4,7 @@ Build-time CLI for the Keewano TypeScript SDK: turns per-event JSON definitions 
 
 ## Documentation
 
-See the [Custom Events guide](../../docs/custom-events.md) and the full [Codegen reference](../../docs/codegen.md).
+See the [Custom Events guide](https://github.com/Keewano/TypeScript-SDK/blob/main/docs/custom-events.md) and the full [Codegen reference](https://github.com/Keewano/TypeScript-SDK/blob/main/docs/codegen.md).
 
 ## Installation
 

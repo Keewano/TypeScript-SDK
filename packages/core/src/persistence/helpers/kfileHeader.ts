@@ -7,8 +7,8 @@
  * ```
  *  0..3   FourCC          = 0x57554242 ('BBUW' on disk)
  *  4..7   BatchVersion    = uint32 LE (writer emits 2; reader accepts 1 and 2)
- *  8..23  UserId          = 16 raw GUID bytes (Microsoft mixed-endian)
- * 24..39  DataSessionId   = 16 raw GUID bytes
+ *  8..23  UserId          = 16 raw UUID bytes (Microsoft mixed-endian)
+ * 24..39  DataSessionId   = 16 raw UUID bytes
  * 40..43  BatchNum        = int32 LE
  * 44..47  BatchStartTime  = uint32 LE (Unix seconds, UTC)
  * 48..51  BatchEndTime    = uint32 LE (Unix seconds, UTC)
@@ -44,17 +44,17 @@ function isAcceptedBatchVersion(version: number): boolean {
   return ACCEPTED_BATCH_VERSIONS.includes(version);
 }
 
-/** Byte length of the GUID buffers embedded in the header. */
-const GUID_SIZE = 16;
+/** Byte length of the UUID buffers embedded in the header. */
+const UUID_SIZE = 16;
 
 /**
  * Args bag for {@link writeKFileHeader}.
  *
  * batchVersion - Wire-protocol batch-format version stamp.
- * userId - 16 raw GUID bytes (Microsoft mixed-endian). Length is
+ * userId - 16 raw UUID bytes (Microsoft mixed-endian). Length is
  *   validated to keep a misshapen identity buffer from silently
  *   corrupting downstream offsets.
- * dataSessionId - 16 raw GUID bytes.
+ * dataSessionId - 16 raw UUID bytes.
  * batchNum - Monotonic batch sequence number; written as int32 LE.
  * batchStartTime - Unix seconds (UTC).
  * batchEndTime - Unix seconds (UTC).
@@ -88,7 +88,7 @@ interface ParsedKFileHeader {
 /**
  * Serialize the header into a fresh 56-byte `Uint8Array`.
  *
- * @throws RangeError when a GUID buffer is the wrong length, or when
+ * @throws RangeError when a UUID buffer is the wrong length, or when
  *   a numeric field is not a non-negative integer (batchVersion /
  *   batchNum / timestamps / dataSize).
  */
@@ -109,12 +109,12 @@ function writeKFileHeader({
    * loudly instead of writing garbage. Matches the symmetric guard
    * in `saveBatch`.
    */
-  if (!(userId instanceof Uint8Array) || userId.length !== GUID_SIZE) {
-    throw new RangeError(`writeKFileHeader: userId must be a ${String(GUID_SIZE)}-byte Uint8Array`);
+  if (!(userId instanceof Uint8Array) || userId.length !== UUID_SIZE) {
+    throw new RangeError(`writeKFileHeader: userId must be a ${String(UUID_SIZE)}-byte Uint8Array`);
   }
-  if (!(dataSessionId instanceof Uint8Array) || dataSessionId.length !== GUID_SIZE) {
+  if (!(dataSessionId instanceof Uint8Array) || dataSessionId.length !== UUID_SIZE) {
     throw new RangeError(
-      `writeKFileHeader: dataSessionId must be a ${String(GUID_SIZE)}-byte Uint8Array`,
+      `writeKFileHeader: dataSessionId must be a ${String(UUID_SIZE)}-byte Uint8Array`,
     );
   }
   if (!Number.isSafeInteger(batchVersion) || batchVersion < 0 || batchVersion > 0xffffffff) {
@@ -166,7 +166,7 @@ function readKFileHeader(bytes: Uint8Array): ParsedKFileHeader | null {
     return null;
   }
   /**
-   * Slice the GUID buffers so the caller owns independent memory and
+   * Slice the UUID buffers so the caller owns independent memory and
    * mutating the parsed result cannot ripple back into the source
    * `Uint8Array`.
    */
@@ -187,6 +187,14 @@ function readKFileHeader(bytes: Uint8Array): ParsedKFileHeader | null {
   if (batchNum < 0 || dataSize < 0) {
     return null;
   }
+  /**
+   * An inverted time interval (end before start) is corruption too:
+   * the transport rejects such a batch forever, so letting it load
+   * would stall the backlog head-of-line on every ship pass.
+   */
+  if (batchEndTime < batchStartTime) {
+    return null;
+  }
   return {
     batchVersion,
     userId,
@@ -203,7 +211,7 @@ export {
   ACCEPTED_BATCH_VERSIONS,
   BATCH_FOURCC,
   CURRENT_BATCH_VERSION,
-  GUID_SIZE,
+  UUID_SIZE,
   KFILE_HEADER_SIZE,
   isAcceptedBatchVersion,
   readKFileHeader,

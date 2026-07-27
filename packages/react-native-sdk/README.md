@@ -4,7 +4,7 @@ Bare React Native SDK for Keewano AI Analyst: the public `Keewano` facade, the a
 
 ## Documentation
 
-See the [documentation](../../docs/README.md) for install, configuration, and the full API. For Expo apps use [`@keewano/react-native-expo-sdk`](../react-native-expo-sdk/README.md) instead.
+See the [documentation](https://github.com/Keewano/TypeScript-SDK/blob/main/docs/README.md) for install, configuration, and the full API. For Expo apps use [`@keewano/react-native-expo-sdk`](https://www.npmjs.com/package/@keewano/react-native-expo-sdk) instead.
 
 ## Installation
 

@@ -4,17 +4,21 @@
  * without churning the public surface.
  */
 
+import type { EmitTarget } from './emit';
+
 /**
  * Resolved argv shape after `parseArgv` runs.
  *
  * input - resolved absolute path to the input directory.
  * output - resolved absolute path of the .ts file to write.
+ * target - SDK the generated module is emitted for; defaults to `react-native`.
  * watch - when true, the CLI stays in foreground and re-emits on change.
  * help / version - meta flags that short-circuit the run.
  */
 interface ParsedCliArgs {
   input: string;
   output: string;
+  target: EmitTarget;
   watch: boolean;
   help: boolean;
   version: boolean;

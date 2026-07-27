@@ -9,11 +9,14 @@
  * travels in the `K-InstallId` header but never lands in a `.kwub`
  * file - the asymmetry is carried explicitly.
  *
- * installId - 16-byte mixed-endian GUID for the persistent install
- *   identity. Sent as `K-InstallId`.
- * userId - 16-byte GUID for the developer-assigned user. Zero-filled
+ * installId - 16-byte mixed-endian UUID for the install identity, sent
+ *   as `K-InstallId`. All-zero for server-relay batches: the server has
+ *   no install identity for a server-side (per end-user) event, and an
+ *   all-zero id is how it recognizes one. A device SDK sends its real,
+ *   non-zero install id.
+ * userId - 16-byte UUID for the developer-assigned user. Zero-filled
  *   when not set. Sent as `K-Uid`.
- * dataSessionId - 16-byte GUID for the per-launch session. Sent as
+ * dataSessionId - 16-byte UUID for the per-launch session. Sent as
  *   `K-DS`.
  * batchNum - Monotonic batch sequence per process. Sent as `K-Batch`
  *   (decimal int32).

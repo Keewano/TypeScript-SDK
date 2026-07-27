@@ -74,9 +74,9 @@ interface KeewanoConfig {
  * throw rejects `Keewano.init()` instead of being logged as a
  * best-effort failure. Reserved for trackers whose absence would
  * corrupt the session record - currently only the InitialEventsTracker,
- * which emits the canonical APP_LAUNCH / PLATFORM / OS / RAM_SIZE /
- * SCREEN_RESOLUTION / SYSTEM_LANG burst the analytics server expects
- * at the start of every session.
+ * which emits the canonical APP_LAUNCH / PLATFORM / DEVICE_TYPE / OS /
+ * RAM_SIZE / SCREEN_RESOLUTION / SYSTEM_LANG burst the analytics server
+ * expects at the start of every session.
  */
 interface KeewanoTracker {
   readonly name: string;

@@ -1,0 +1,49 @@
+{
+  "name": "@keewano/node-sdk",
+  "version": "1.0.0-41",
+  "description": "Keewano analytics SDK for Node.js services and processes; built on @keewano/core.",
+  "main": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js",
+      "require": "./dist/src/index.js",
+      "default": "./dist/src/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "build:prod": "tsc -p tsconfig.prod.json",
+    "clean": "rimraf dist"
+  },
+  "keywords": [
+    "analytics",
+    "keewano",
+    "sdk",
+    "node"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Keewano/TypeScript-SDK.git",
+    "directory": "packages/node-sdk"
+  },
+  "homepage": "https://github.com/Keewano/TypeScript-SDK#readme",
+  "bugs": "https://github.com/Keewano/TypeScript-SDK/issues",
+  "dependencies": {
+    "@keewano/core": "*"
+  },
+  "devDependencies": {
+    "@types/node": "20.19.27"
+  },
+  "license": "MIT"
+}

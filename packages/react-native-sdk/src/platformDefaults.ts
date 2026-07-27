@@ -10,7 +10,7 @@
 import type { PlatformAdapter } from './types/platformAdapter';
 import type { RnModule, RnPlatformLike } from './types/platformDefaults';
 
-import { clampUint32 } from './clamp';
+import { clampUint32 } from '@keewano/core';
 
 /**
  * `require` is provided by the React Native / Node runtime but is

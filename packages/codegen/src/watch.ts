@@ -7,7 +7,7 @@
 
 import type { RunOnceArgs } from './types/cli';
 
-import { basename } from 'node:path';
+import { basename, resolve } from 'node:path';
 
 import { CLI_DEFAULTS, EXIT_CODES } from './defaults';
 import { IoError } from './errors';
@@ -24,6 +24,23 @@ import { stringifyError } from './stringifyError';
  */
 function isDotEntry(testPath: string): boolean {
   return basename(testPath).startsWith('.');
+}
+
+/**
+ * Build the `ignored` callback for a watch rooted at `root`. chokidar
+ * applies the callback to the watch ROOT itself, so a bare
+ * `isDotEntry` would silently kill the whole watcher when the input
+ * directory is dot-named (e.g. `.keewano-events`): the root gets
+ * ignored, no events ever fire, and `--watch` reports nothing. The
+ * predicate therefore never dot-filters the root itself and applies
+ * the dotfile rule only to entries below it.
+ */
+function makeIgnoredPredicate(root: string): (testPath: string) => boolean {
+  const resolvedRoot = resolve(root);
+  return (testPath: string): boolean => {
+    if (resolve(testPath) === resolvedRoot) return false;
+    return isDotEntry(testPath);
+  };
 }
 
 /**
@@ -54,7 +71,7 @@ async function runWatchLoop({
   }
   process.stdout.write(`keewano-codegen: watching ${args.input}\n`);
   const watcher = chokidar.watch(args.input, {
-    ignored: (testPath: string) => isDotEntry(testPath),
+    ignored: makeIgnoredPredicate(args.input),
     persistent: true,
     ignoreInitial: true,
   });
@@ -108,4 +125,4 @@ async function runWatchLoop({
   return lastExit;
 }
 
-export { isDotEntry, runWatchLoop };
+export { isDotEntry, makeIgnoredPredicate, runWatchLoop };

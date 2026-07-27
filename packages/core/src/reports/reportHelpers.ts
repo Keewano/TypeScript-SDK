@@ -7,10 +7,13 @@
  *   3. Emit one or more events via the dispatcher.
  *
  * `runWhenReady` centralizes the runtime lookup / pre-init queue
- * branch so individual report methods stay tiny.
+ * branch so individual report methods stay tiny. Both helpers are
+ * generic over the runtime type so a platform facade can read its own
+ * superset runtime back while the shared report methods read only the
+ * base {@link KeewanoRuntime}.
  */
 
-import type { SdkRuntime } from '../runtime';
+import type { KeewanoRuntime } from '../runtime';
 
 import { enqueuePreInit, getRuntime, isInitialized, isInitializing } from '../runtime';
 
@@ -71,9 +74,9 @@ function truncateString(value: string): string {
  * across multiple events overwrite this with their own sample
  * inside `fn`, so the per-burst contract still holds.
  */
-function runWhenReady(fn: (runtime: SdkRuntime) => void): void {
+function runWhenReady<T extends KeewanoRuntime = KeewanoRuntime>(fn: (runtime: T) => void): void {
   const ts = Math.floor(Date.now() / 1000);
-  const op = (runtime: SdkRuntime): void => {
+  const op = (runtime: T): void => {
     runtime.dispatcher.setFrameTimestamp(ts);
     fn(runtime);
   };
@@ -89,10 +92,10 @@ function runWhenReady(fn: (runtime: SdkRuntime) => void): void {
     if (!isInitializing()) {
       throw new Error(NOT_INITIALIZED_MESSAGE);
     }
-    enqueuePreInit(() => op(getRuntime()));
+    enqueuePreInit(() => op(getRuntime<T>()));
     return;
   }
-  op(getRuntime());
+  op(getRuntime<T>());
 }
 
 /**
@@ -105,7 +108,9 @@ function runWhenReady(fn: (runtime: SdkRuntime) => void): void {
  *   the returned promise see the same failure mode they would have
  *   seen had the runtime been ready when they called.
  */
-function runWhenReadyAsync(fn: (runtime: SdkRuntime) => Promise<void>): Promise<void> {
+function runWhenReadyAsync<T extends KeewanoRuntime = KeewanoRuntime>(
+  fn: (runtime: T) => Promise<void>,
+): Promise<void> {
   const ts = Math.floor(Date.now() / 1000);
   if (!isInitialized()) {
     /**
@@ -138,7 +143,7 @@ function runWhenReadyAsync(fn: (runtime: SdkRuntime) => Promise<void>): Promise<
          * holds without trading order for it.
          */
         try {
-          const live = getRuntime();
+          const live = getRuntime<T>();
           live.dispatcher.setFrameTimestamp(ts);
           Promise.resolve(fn(live)).then(resolve, reject);
         } catch (err: unknown) {
@@ -147,7 +152,7 @@ function runWhenReadyAsync(fn: (runtime: SdkRuntime) => Promise<void>): Promise<
       });
     });
   }
-  const runtime = getRuntime();
+  const runtime = getRuntime<T>();
   /**
    * Immediate path: setFrameTimestamp(ts) + fn(runtime) run in the
    * caller's task synchronously, preserving emission order against

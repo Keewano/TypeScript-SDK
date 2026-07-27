@@ -17,7 +17,6 @@
 
 export type {
   BatchFileInfo,
-  BatchRecord,
   DeleteBatchArgs,
   ListBatchesArgs,
   LoadBatchArgs,
@@ -27,11 +26,11 @@ export type {
 export type { ReduceStorageSizeArgs } from './types/storageCap';
 
 /**
- * GUID byte length. Re-exported as a shared primitive (identity, network,
+ * UUID byte length. Re-exported as a shared primitive (identity, network,
  * and the platform packages all build 16-byte identity buffers from it);
  * it is not a `.kwub`-specific byte-format internal.
  */
-export { GUID_SIZE } from './helpers/kfileHeader';
+export { UUID_SIZE } from './helpers/kfileHeader';
 
 export { deleteBatch, listBatches, loadBatch, saveBatch, totalBatchSize } from './kfile';
 export { reduceStorageSize } from './storageCap';

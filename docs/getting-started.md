@@ -15,8 +15,8 @@ Pick the package that matches your project.
 npm install @keewano/react-native-expo-sdk
 ```
 
-Expo apps already provide the peer the SDK needs (`expo-file-system`), so there is
-nothing else to install.
+Expo apps already provide the peers the SDK needs (`expo-file-system` and
+`expo-constants`), so there is nothing else to install.
 
 **Bare React Native:**
 
@@ -30,7 +30,7 @@ autolinking / pod-install step once.
 ## 2. Configure your project
 
 Call `init` once, early in your app's lifecycle. It is idempotent, so a second call
-(such as a Fast Refresh re-render) is simply ignored.
+(such as a Fast Refresh re-render) logs a warning and joins the first one.
 
 ```typescript
 import { useEffect } from 'react';
@@ -50,7 +50,8 @@ opt-out flags, custom events - lives in [Configuration](configuration.md).
 
 > [!NOTE]
 > As soon as `init` resolves you are already collecting data. App lifecycle, button
-> taps, screens, and errors are tracked automatically - see [Automatic Tracking](automatic-tracking.md).
+> taps, deep links, and errors are tracked automatically; screen tracking is one
+> opt-in hook away - see [Automatic Tracking](automatic-tracking.md).
 
 ## 3. Identify your players
 
@@ -58,7 +59,7 @@ Each install gets an anonymous id automatically. If your game has its own user i
 associate it once it is known so Keewano can recognise the player across devices.
 
 ```typescript
-// 36-char hyphenated GUID
+// 36-char hyphenated UUID
 Keewano.setUserId('11111111-1111-4111-8111-111111111111');
 
 // or a numeric id
@@ -99,16 +100,8 @@ See [Data Privacy](privacy.md) for the full consent model.
 
 ## 6. Button-click tracking control
 
-Button taps on `Pressable` are captured automatically. You can turn this off if you
-prefer to report clicks yourself.
-
-```typescript
-Keewano.init({ apiKey: '...', disableButtonTracking: true });
-```
-
-> [!IMPORTANT]
-> We do not recommend disabling automatic capture unless you have a specific reason -
-> it is the cheapest, most complete signal you get for free.
+Button taps on `Pressable` are captured automatically. To opt out - or tune any other
+auto-tracker - see [Configuration](configuration.md).
 
 ## 7. Integrating into an existing game
 

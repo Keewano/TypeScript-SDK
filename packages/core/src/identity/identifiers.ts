@@ -23,19 +23,19 @@ import type {
 } from './types/identifiers';
 
 import { assertUint8Array } from '../encoding/assertions';
-import { guidToBytes, newGuid } from '../encoding/guid';
+import { uuidToBytes, newUuid } from '../encoding/uuid';
 
 import { IDS_FILE_SIZE, IDS_FILENAME } from './helpers/constants';
 
-/** Byte length of a single mixed-endian GUID buffer. */
-const GUID_SIZE = 16;
+/** Byte length of a single mixed-endian UUID buffer. */
+const UUID_SIZE = 16;
 
 /**
  * `true` when every byte in `bytes` is zero. Applied only to
  * `installId` (the corruption signal) and never to `userId` (where
  * all-zero is a legitimate "not set" sentinel).
  */
-function isAllZeroGuid(bytes: Uint8Array): boolean {
+function isAllZeroUuid(bytes: Uint8Array): boolean {
   return bytes.every((b) => b === 0);
 }
 
@@ -52,8 +52,8 @@ function isAllZeroGuid(bytes: Uint8Array): boolean {
  */
 function createFreshIdentifiers(): UserIdentifiers {
   return {
-    installId: guidToBytes(newGuid()),
-    userId: new Uint8Array(GUID_SIZE),
+    installId: uuidToBytes(newUuid()),
+    userId: new Uint8Array(UUID_SIZE),
   };
 }
 
@@ -119,7 +119,7 @@ async function writeIdentifiersFile(args: WriteIdentifiersFileArgs): Promise<voi
   const { storage, identifiers } = args;
   const out = new Uint8Array(IDS_FILE_SIZE);
   out.set(identifiers.installId, 0);
-  out.set(identifiers.userId, GUID_SIZE);
+  out.set(identifiers.userId, UUID_SIZE);
   await storage.writeFile({ path: IDS_FILENAME, bytes: out });
 }
 
@@ -152,9 +152,9 @@ async function loadOrInitIdentifiers(args: LoadOrInitIdentifiersArgs): Promise<U
     op: async () => {
       const bytes = await storage.readFile({ path: IDS_FILENAME });
       if (bytes !== null && bytes.length === IDS_FILE_SIZE) {
-        const installId = bytes.slice(0, GUID_SIZE);
-        const userId = bytes.slice(GUID_SIZE, IDS_FILE_SIZE);
-        if (!isAllZeroGuid(installId)) {
+        const installId = bytes.slice(0, UUID_SIZE);
+        const userId = bytes.slice(UUID_SIZE, IDS_FILE_SIZE);
+        if (!isAllZeroUuid(installId)) {
           return { installId, userId };
         }
       }
@@ -188,16 +188,16 @@ async function loadOrInitIdentifiers(args: LoadOrInitIdentifiersArgs): Promise<U
 async function persistIdentifiers(args: PersistIdentifiersArgs): Promise<void> {
   const { storage, identifiers } = args;
   assertUint8Array({
-    expectedLength: GUID_SIZE,
+    expectedLength: UUID_SIZE,
     fnName: 'persistIdentifiers: identifiers.installId',
     value: identifiers.installId,
   });
   assertUint8Array({
-    expectedLength: GUID_SIZE,
+    expectedLength: UUID_SIZE,
     fnName: 'persistIdentifiers: identifiers.userId',
     value: identifiers.userId,
   });
-  if (isAllZeroGuid(identifiers.installId)) {
+  if (isAllZeroUuid(identifiers.installId)) {
     throw new TypeError('persistIdentifiers: zero installId');
   }
   /*

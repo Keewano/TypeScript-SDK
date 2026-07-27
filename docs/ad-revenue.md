@@ -12,13 +12,20 @@ Call this when you present an ad to the player.
 ```typescript
 Keewano.reportAdOffered({
   placement: 'level_complete',
-  adType: 1, // numeric ad-type code (see Events Reference)
+  adType: 1, // 1 = rewarded, see the table below
 });
 ```
 
 `placement` is your own label for where the ad appeared. `adType` is a numeric
-ad-type code (rewarded, interstitial, ...) - the codes are listed in the
-[Events Reference](event-types.md).
+ad-type code:
+
+| Code | Ad type |
+| ---- | ---------------------------------------------------------- |
+| 1    | Rewarded - the player opts in for a reward |
+| 2    | Interstitial - full-screen between game moments |
+| 3    | Banner - persistent on-screen strip |
+| 4    | Playable - interactive mini-game ad |
+| 5    | Offerwall - list of tasks/offers granting rewards |
 
 ## Report ad revenue
 

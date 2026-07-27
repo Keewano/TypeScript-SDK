@@ -94,14 +94,17 @@ function useKeewanoNavigation(usePathname: UsePathnameHook): void {
       if (previous !== undefined) writeSceneCursor(undefined);
     }
     /**
-     * `[pathname]` is the correct dependency here because expo-router's
-     * `usePathname` yields a stable string per route, so the effect
-     * fires exactly once per transition. This differs from the
-     * react-navigation sibling hook, which intentionally omits the
-     * dependency array and re-runs every render because navigation refs
-     * are reassigned during commit and never change identity stably.
+     * No dependency array, matching the react-navigation sibling
+     * hook: the effect re-runs on every render and only advances the
+     * cursor on a successful emit. A `[pathname]` dependency would
+     * permanently lose the initial route when the hook renders
+     * before `Keewano.init` - the pre-init `reportSceneLoaded` throw
+     * is swallowed without advancing the cursor, and the effect
+     * would never re-fire for the unchanged pathname. Re-running per
+     * render is cheap: the cursor compare above coalesces same-route
+     * renders into a no-op.
      */
-  }, [pathname]);
+  });
 }
 
 export type { UsePathnameHook } from './types/useKeewanoNavigation';

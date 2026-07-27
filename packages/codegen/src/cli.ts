@@ -43,7 +43,7 @@ async function run(argv: readonly string[]): Promise<number> {
     return EXIT_CODES.OK;
   }
 
-  const initialExit = runOnce({ input: args.input, output: args.output });
+  const initialExit = runOnce({ input: args.input, output: args.output, target: args.target });
   if (!args.watch) return initialExit;
   if (initialExit !== EXIT_CODES.OK) return initialExit;
 
@@ -54,7 +54,7 @@ async function run(argv: readonly string[]): Promise<number> {
      * instead of a silent `OK`.
      */
     return await runWatchLoop({
-      args: { input: args.input, output: args.output },
+      args: { input: args.input, output: args.output, target: args.target },
       onChange: runOnce,
     });
   } catch (err: unknown) {
@@ -69,10 +69,10 @@ async function run(argv: readonly string[]): Promise<number> {
   }
 }
 
-function runOnce({ input, output }: RunOnceArgs): number {
+function runOnce({ input, output, target }: RunOnceArgs): number {
   try {
     const { events } = parseEventDirectory({ inputDir: input });
-    const source = emitGeneratedSource({ events });
+    const source = emitGeneratedSource({ events, target });
     const existing = readExistingSource(output);
     if (existing === source) {
       process.stdout.write(`keewano-codegen: ${output} up to date (${events.length} events)\n`);

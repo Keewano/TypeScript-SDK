@@ -22,6 +22,16 @@ function configureTransportFetch(fetchImpl: TransportFetch | null): void {
 }
 
 /**
+ * `true` when a fetch override is currently installed. Platform
+ * packages check this before injecting their default so a fetch the
+ * host installed first (cert pinning, proxying) is never silently
+ * overwritten.
+ */
+function isTransportFetchConfigured(): boolean {
+  return injectedFetch !== null;
+}
+
+/**
  * The fetch the transport should use for this call: the injected one if
  * a platform package set it, otherwise the current global `fetch`
  * (resolved per call so test spies on `globalThis.fetch` are honored).
@@ -35,4 +45,4 @@ function resolveTransportFetch(): TransportFetch {
   return injectedFetch ?? globalThis.fetch;
 }
 
-export { configureTransportFetch, resolveTransportFetch };
+export { configureTransportFetch, isTransportFetchConfigured, resolveTransportFetch };
