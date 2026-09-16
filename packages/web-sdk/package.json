@@ -1,0 +1,55 @@
+{
+  "name": "@keewano/web-sdk",
+  "version": "1.1.0-179",
+  "description": "Keewano analytics SDK for web browsers.",
+  "main": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js",
+      "require": "./dist/src/index.js",
+      "default": "./dist/src/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "unpkg": "./dist/browser/keewano.iife.js",
+  "jsdelivr": "./dist/browser/keewano.iife.js",
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && npm run build:browser && npm run check:size",
+    "build:prod": "tsc -p tsconfig.prod.json && npm run build:browser && npm run check:size",
+    "build:browser": "esbuild src/browser-entry.ts --bundle --format=iife --target=safari15.4 --minify --sourcemap --alias:@keewano/core=../core/src --outfile=dist/browser/keewano.iife.js",
+    "check:size": "node scripts/check-bundle-size.mjs",
+    "clean": "rimraf dist",
+    "prepack": "node ../../scripts/syncSiblingRanges.cjs --apply",
+    "postpack": "node ../../scripts/syncSiblingRanges.cjs --restore"
+  },
+  "keywords": [
+    "analytics",
+    "keewano",
+    "sdk",
+    "web",
+    "browser"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Keewano/TypeScript-SDK.git",
+    "directory": "packages/web-sdk"
+  },
+  "homepage": "https://github.com/Keewano/TypeScript-SDK#readme",
+  "bugs": "https://github.com/Keewano/TypeScript-SDK/issues",
+  "license": "MIT",
+  "devDependencies": {
+    "esbuild": "0.28.1",
+    "fake-indexeddb": "6.2.5"
+  },
+  "dependencies": {
+    "@keewano/core": "^1.1.0-179"
+  }
+}

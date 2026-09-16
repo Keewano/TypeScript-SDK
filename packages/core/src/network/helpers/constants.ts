@@ -32,4 +32,18 @@ const ENDPOINT_PATH = {
  */
 const CONTENT_TYPE_OCTET_STREAM = 'application/octet-stream';
 
-export { CONTENT_TYPE_OCTET_STREAM, ENDPOINT_PATH, KEEWANO_DEFAULT_BASE_URL };
+/**
+ * Query parameter carrying the API key on the JSON ingestion route.
+ * Mirrors the binary protocol's `K-Token` header name; the query is
+ * used because the exit path cannot set headers. The custom-events
+ * routes are never issued from a closing page and reject the key as a
+ * query parameter, so they send the same name as a header instead.
+ */
+const REST_AUTH_QUERY_PARAM = 'k-token';
+
+export {
+  CONTENT_TYPE_OCTET_STREAM,
+  ENDPOINT_PATH,
+  KEEWANO_DEFAULT_BASE_URL,
+  REST_AUTH_QUERY_PARAM,
+};

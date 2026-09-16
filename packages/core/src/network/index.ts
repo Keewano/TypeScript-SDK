@@ -19,6 +19,8 @@ export type {
   RegisterCustomEventMapArgs,
 } from './types/customEventMap';
 export type { CustomEventDef, CustomEventSet } from './types/customEventSet';
+export type { CustomEventsRegistrar } from './types/customEventsRegistrar';
+export type { RestIngestReceipt } from './types/restTransport';
 export type { TransportFetch } from './types/transportFetch';
 
 export {
@@ -30,8 +32,11 @@ export { isAbortError } from './helpers/isAbortError';
 export { joinEndpoint } from './helpers/joinEndpoint';
 export { configureSdkPlatform } from './helpers/sdkTag';
 
+export { BinaryCustomEventsRegistrar } from './binaryCustomEventsRegistrar';
 export { BinaryTransport } from './binaryTransport';
 export { getCustomEventMapStatus, registerCustomEventMap } from './customEventMap';
+export { RestCustomEventsRegistrar } from './restCustomEventsRegistrar';
+export { EXIT_MAX_BODY_BYTES, REST_MAX_BODY_BYTES, RestTransport } from './restTransport';
 export { sendBatch } from './sendBatch';
 export {
   configureTransportFetch,

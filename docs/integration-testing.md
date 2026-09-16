@@ -27,8 +27,11 @@ Run the app and exercise the paths you care about:
 ## 3. Confirm they arrive
 
 Check the dashboard for your test-user session and verify the events you produced show
-up. Because delivery is batched and retried, allow a short delay - events are flushed
-on a timer, not instantly.
+up. Delivery is batched, not instant, and on a quiet app the wait is longer than most
+people expect: the send loop sits idle for up to 30 seconds between passes, so a first
+event can take about that long to leave. It goes sooner once the batch crosses 1 KB,
+which a busy session reaches in moments and a hello-world integration may never reach.
+Nothing is lost while you wait - the batch is already on disk.
 
 > [!TIP]
 > Point `endpoint` at your staging ingress while testing so test data never lands in

@@ -22,3 +22,4 @@ export type {
 } from './types/codec';
 
 export { BINARY_CODEC_ID, BinaryCodec } from './binaryCodec';
+export { JSON_CODEC_ID, JsonCodec } from './jsonCodec';

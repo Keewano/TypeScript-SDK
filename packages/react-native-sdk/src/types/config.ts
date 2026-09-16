@@ -81,7 +81,14 @@ interface KeewanoConfig {
 interface KeewanoTracker {
   readonly name: string;
   readonly criticalPath?: boolean;
-  attach(): () => void;
+  /**
+   * Wire up the listeners and hand back how to remove them: either a
+   * detach function or a subscription with a callable `remove()`. The
+   * second shape is what most React Native and browser APIs already
+   * return, and the SDK has always accepted it - the type said
+   * otherwise, so a host handing one over had to cast.
+   */
+  attach(): (() => void) | { remove: () => void };
 }
 
 export type { KeewanoConfig, KeewanoTracker };

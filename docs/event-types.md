@@ -11,10 +11,10 @@ Captured for you after `init` - see [Automatic Tracking](automatic-tracking.md).
 
 | Group | Events |
 |---|---|
-| Session context | app launch, platform, OS, RAM, screen resolution, system language |
+| Session context | app launch, platform, device type, OS, RAM, screen resolution, system language |
 | App lifecycle | app pause, app resume |
-| Input | button click (`Pressable`), Android back button |
-| Navigation | scene loaded / unloaded (via `useKeewanoNavigation`) |
+| Input | button click (`Pressable` / `Touchable*`, or a web click), Android back button |
+| Navigation | scene loaded / unloaded on the device SDKs (via `useKeewanoNavigation`); window open / close on the web SDK (initial page, History API, back / forward) |
 | Deep links | deep link activated |
 | Errors | error message (uncaught JS errors) |
 | Network | internet connected / disconnected (opt-in) |
@@ -25,7 +25,7 @@ Reported by you through `Keewano.report*` - one short guide each:
 
 | Group | Events | Guide |
 |---|---|---|
-| Windows | window open / close | [Windows and Buttons](windows.md) |
+| Windows | window open / close (also emitted automatically by the web SDK's navigation tracker) | [Windows and Buttons](windows.md) |
 | Progression | onboarding milestone, A/B test assignment | [Tutorial Tracking](onboarding.md) |
 | Attribution | install campaign, game language | [Marketing Campaign](install-campaign.md) |
 | Purchases | product id, price, timestamp, items granted | [In-App Purchases](in-app-purchases.md) |
@@ -39,9 +39,11 @@ Reported by you through `Keewano.report*` - one short guide each:
 Events you declare yourself, on top of the built-ins. See [Custom Events](custom-events.md).
 
 > [!NOTE]
-> A few identifiers exist in the protocol but are never emitted by this SDK because
-> React Native has no equivalent API for them (for example GPU type and VRAM size).
-> They are reserved so the wire format stays compatible across all Keewano SDKs.
+> Some identifiers exist in the shared wire protocol but are never emitted by this SDK.
+> A few have no pure-JavaScript equivalent (GPU type, VRAM size, memory warning,
+> genuinity check); others are derived server-side or belong to other Keewano SDKs
+> (session start / end, country, day-in-game, pointer and empty-space events). They are
+> reserved so the wire format stays compatible across all Keewano SDKs.
 
 ---
 

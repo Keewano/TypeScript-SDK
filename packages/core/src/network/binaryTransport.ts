@@ -32,7 +32,11 @@ class BinaryTransport implements Transport {
         reason: `codec mismatch: expected ${this.codecId}, got ${batch.codecId}`,
       };
     }
+    let failure: string | null = null;
     const ok = await sendBatch({
+      onFailure: (reason) => {
+        failure = reason;
+      },
       baseUrl: ctx.endpoint,
       apiKey: ctx.apiKey,
       batch: {
@@ -50,7 +54,14 @@ class BinaryTransport implements Transport {
       ...(ctx.signal === undefined ? {} : { signal: ctx.signal }),
       ...(ctx.extraHeaders === undefined ? {} : { extraHeaders: ctx.extraHeaders }),
     });
-    return ok ? { kind: 'ok' } : { kind: 'retryable', reason: 'non-2xx or network failure' };
+    if (ok) return { kind: 'ok' };
+    /**
+     * The status and the host, not a category. A first integration
+     * fails here more than anywhere else, and "non-2xx or network
+     * failure" cannot tell a wrong key from a wrong endpoint from a
+     * host that is simply not up.
+     */
+    return { kind: 'retryable', reason: failure ?? 'delivery failed with no reason reported' };
   }
 }
 

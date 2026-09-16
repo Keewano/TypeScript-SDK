@@ -36,7 +36,8 @@ interface BatchMetadata {
  * One shippable unit produced by `BatchBuilder.seal`: a codec-encoded
  * payload spanning a contiguous run of whole events.
  *
- * payload - encoded event bytes for this slice only.
+ * payload - encoded event bytes for this slice only, in a buffer the
+ *   caller owns (never a view into builder state).
  * batchStartTime - Unix seconds (UTC) of the slice's first event.
  * batchEndTime - Unix seconds (UTC) the slice closes at: the cut
  *   point's last event time for an intermediate slice, the caller's
@@ -180,6 +181,10 @@ interface SealArgs {
  *   one slice).
  * - `seal` returns one slice per cut span plus the tail; an empty
  *   accumulation seals to an empty array.
+ * - `seal` implementations MUST return owned payload buffers: nothing
+ *   may alias builder state, so a caller (the persist path hands
+ *   sealed batches to a host observer) can hold a slice past the next
+ *   `reset` and past any later event.
  * - `reset` returns the builder to the empty state without dropping
  *   its identity so the double-buffer swap can reuse it.
  */
@@ -218,6 +223,13 @@ interface CreateBuilderArgs {
  * - `id` names the encoding (for example 'binary'); it travels on
  *   every `EncodedBatch` and routes a loaded batch to the matching
  *   transport.
+ * - `tombstoneCeilingBytes` is the largest container size a
+ *   `BATCH_DROPPED` tombstone encoded by this codec can occupy on
+ *   disk. The storage-cap pass skips files at or under it as
+ *   already-tombstoned; a value below the real maximum makes the cap
+ *   pass reload and re-measure settled tombstones on every
+ *   iteration, a value above it makes the pass skip small droppable
+ *   batches.
  * - `serializeContainer` produces the storable byte form of a batch
  *   (payload + metadata envelope). For the binary codec this is the
  *   existing on-disk container format, byte-identical.
@@ -230,6 +242,7 @@ interface CreateBuilderArgs {
  */
 interface Codec {
   readonly id: string;
+  readonly tombstoneCeilingBytes: number;
   createBuilder(args: CreateBuilderArgs): BatchBuilder;
   serializeContainer(batch: EncodedBatch): Uint8Array;
   deserializeContainer(bytes: Uint8Array): EncodedBatch | null;

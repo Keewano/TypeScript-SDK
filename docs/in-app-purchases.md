@@ -32,6 +32,14 @@ Keewano.reportInAppPurchase({
 > `productName` is your own product identifier (the SKU). Keep it stable across
 > versions so the backend can group a product's purchases over time.
 
+> [!TIP]
+> Identifier strings are truncated to 256 characters before they go on the wire. This
+> applies to every short label the SDK reports - product and package names, currency
+> codes, ad placements, item names, campaign and language values, window and button
+> names, milestone and A/B test names. Two identifiers that differ only past character
+> 256 collapse into the same value, so keep them short and make the distinguishing part
+> come first. Error messages are the exception: they are sent in full.
+
 ## Report the items granted
 
 If the purchase hands the player in-game items, report them too. Keewano then ties

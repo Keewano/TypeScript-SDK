@@ -40,7 +40,7 @@ function loadRNFS(): RNFSLike {
     return 'default' in mod ? mod.default : mod;
   } catch {
     throw new Error(
-      'BareRNStorageAdapter: react-native-fs is not installed. Add it as a dependency, or pass a custom storage adapter to Keewano.init.',
+      'BareRNStorageAdapter: react-native-fs is not usable. Install it if it is missing; if it is installed, its native module is not linked into this build - rebuild the app after adding it, or run it on a device rather than a bare JS runtime. A custom storage adapter passed to Keewano.init also works.',
     );
   }
 }

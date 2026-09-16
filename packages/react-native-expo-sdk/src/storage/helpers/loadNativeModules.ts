@@ -4,13 +4,11 @@
  * an `ExpoStorageAdapter` is actually instantiated without a test
  * override - host applications that never construct the adapter pay no
  * startup cost.
- *
- * Not exercised by unit tests because the native module is not
- * installed in the jest runtime; the adapter tests always pass a mock
- * override instead.
  */
 
 import type { ExpoFileSystemLike } from '../types/expoStorageAdapter';
+
+import { StorageUnavailableError } from './errors';
 
 /**
  * `require` is provided by the React Native / Node runtime but is not
@@ -50,18 +48,38 @@ function hasLegacyFileSystemApi(mod: unknown): mod is ExpoFileSystemLike {
  * legacy API back to the root), and fall back to the `/legacy` entry
  * point when the root no longer carries the legacy surface.
  *
- * The `/legacy` subpath does not exist before SDK 54, so its `require`
- * is wrapped in try / catch: that marks it an OPTIONAL dependency for
- * Metro (`allowOptionalDependencies`), which would otherwise fail the
- * whole bundle at build time on SDK <= 53 where the path is absent -
- * even though the runtime never reaches it there (the root carries the
- * legacy API and returns first).
+ * Both `require` calls are wrapped in try / catch: that marks them
+ * OPTIONAL dependencies for Metro (`allowOptionalDependencies`), which
+ * would otherwise fail the whole bundle at build time where a path is
+ * absent - the `/legacy` subpath does not exist before SDK 54, and the
+ * root package is absent on a host without `expo-file-system`.
+ *
+ * Both failures degrade rather than throw: an absent package and a
+ * version that dropped the legacy API from both entry points are
+ * equally out of the host's control at runtime, and an SDK upgrade
+ * must never turn a survivable degradation into a rejected `init`.
+ * The message distinguishes them so the console says which one it is.
  */
-/* istanbul ignore next */
 function loadFileSystem(): ExpoFileSystemLike {
-  const root = unwrapDefault(
-    require('expo-file-system') as ExpoFileSystemLike | { default: ExpoFileSystemLike },
-  );
+  let rootModule: unknown;
+  /**
+   * `require` both resolves and evaluates, so this catch sees an
+   * absent package and a package whose own top-level code threw. Both
+   * degrade, because neither is something the host can act on at
+   * runtime and an SDK upgrade must not reject `init`. They are not
+   * the same diagnosis, though, and the message names only the common
+   * one - so the original failure travels as `cause`, or a module that
+   * crashed while loading would reach the developer as "not
+   * installed" and send them after a package that is right there.
+   */
+  try {
+    rootModule = require('expo-file-system');
+  } catch (error) {
+    throw new StorageUnavailableError('ExpoStorageAdapter: expo-file-system not installed', {
+      cause: error,
+    });
+  }
+  const root = unwrapDefault(rootModule as ExpoFileSystemLike | { default: ExpoFileSystemLike });
   if (hasLegacyFileSystemApi(root)) {
     return root;
   }
@@ -76,8 +94,8 @@ function loadFileSystem(): ExpoFileSystemLike {
   if (hasLegacyFileSystemApi(legacy)) {
     return legacy;
   }
-  throw new Error(
-    'ExpoStorageAdapter: expo-file-system is installed but exposes neither the legacy API at its root nor at "expo-file-system/legacy". Install a supported expo-file-system version or pass a custom fileSystem to the adapter.',
+  throw new StorageUnavailableError(
+    'ExpoStorageAdapter: unsupported expo-file-system version (legacy API missing)',
   );
 }
 

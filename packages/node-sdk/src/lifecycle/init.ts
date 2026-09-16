@@ -5,8 +5,14 @@
  * the send loop.
  *
  * Relay mode carries no self-telemetry: no persisted install identity, no
- * consent gate, no environment burst, no crash observer. All user-facing
- * events arrive later through `Keewano.reportUserBatch`. Boot's only
+ * consent gate, no environment burst, no crash observer. APP_LAUNCH is
+ * part of that burst and stays out with it: it opens a session for an
+ * app instance, and the relay is not one - its install id is the
+ * project, its user id the no-user marker, and one session id covers
+ * every batch it ships for every user. Emitted per process it would
+ * open a session for nobody; emitted per batch it would open the same
+ * session again on every report of every user. All user-facing events
+ * arrive later through `Keewano.reportUserBatch`. Boot's only
  * async step is one read of the batches directory to seed the batchNum
  * counter past whatever a prior run left behind; `init` resolves once
  * the runtime is installed and the send loop is running.
@@ -21,6 +27,7 @@ import {
   isByteString,
   uuidToBytes,
   newUuid,
+  seedNextBatchNum,
 } from '@keewano/core';
 
 import {
@@ -33,8 +40,10 @@ import {
 } from '../runtime';
 import { NodeStorageAdapter } from '../storage';
 import { buildDispatcher, buildRuntime } from './build';
+import { BATCHES_DIR } from './helpers/constants';
 import { resolveInstallId } from './helpers/installId';
-import { seedNextBatchNum } from './helpers/seedBatchNum';
+import { serializeLifecycle } from './helpers/serialize';
+import { resolveShutdownGraceMs } from './helpers/shutdownGrace';
 import { startSendLoop } from './sendLoop';
 
 /** UUID byte length, for the all-zero userId marker. */
@@ -49,6 +58,18 @@ const UUID_BYTE_LENGTH = 16;
  * misconfiguration.
  */
 async function init(config: NodeKeewanoConfig): Promise<void> {
+  /**
+   * Queued on the same chain as teardown, so an init racing a
+   * shutdown runs after it rather than during: the checks below would
+   * otherwise see a runtime the teardown is about to clear, take the
+   * already-initialized branch, and leave the SDK dead with a call
+   * that resolved as if it had started.
+   */
+  return serializeLifecycle(() => startInitOnce(config));
+}
+
+/** The boot decision itself, once nothing else is mutating the lifecycle. */
+async function startInitOnce(config: NodeKeewanoConfig): Promise<void> {
   if (isInitialized() || isInitializing()) {
     console.warn('Keewano.init: SDK is already initialized; ignoring re-init.');
     /**
@@ -111,9 +132,15 @@ async function init(config: NodeKeewanoConfig): Promise<void> {
 async function startInit(config: NodeKeewanoConfig): Promise<void> {
   /** Tag every outbound request as Node so the server does not read it as React Native. */
   configureSdkPlatform('Node');
-  const storage =
-    config.storage ??
-    new NodeStorageAdapter(config.dataDir === undefined ? {} : { dataDir: config.dataDir });
+  /**
+   * The type union already rules this out; the check is for a
+   * JavaScript host, which would otherwise reach the adapter's own
+   * throw with nothing naming the config field that is missing.
+   */
+  if (config.storage === undefined && config.dataDir === undefined) {
+    throw new Error('Keewano.init: pass dataDir or storage');
+  }
+  const storage = config.storage ?? new NodeStorageAdapter({ dataDir: config.dataDir as string });
   const endpoint = config.endpoint ?? KEEWANO_DEFAULT_BASE_URL;
   /**
    * `installId` identifies the relay to the backend, which requires a
@@ -135,6 +162,7 @@ async function startInit(config: NodeKeewanoConfig): Promise<void> {
   const runtime = buildRuntime({
     config,
     endpoint,
+    shutdownGraceMs: resolveShutdownGraceMs(config.shutdownGraceMs),
     storage,
     dispatcher,
     installId,
@@ -149,9 +177,29 @@ async function startInit(config: NodeKeewanoConfig): Promise<void> {
    * seed read happens BEFORE the runtime is installed and the loop
    * starts, so no allocation can race it.
    */
-  runtime.nextBatchNum = await seedNextBatchNum(storage);
+  runtime.nextBatchNum = await seedNextBatchNum({ storage, dir: BATCHES_DIR });
   setRuntime(runtime);
   startSendLoop(runtime);
+  /**
+   * Reclaim what a killed process staged and never renamed. Those files
+   * are hidden from the batch listing, so nothing else would ever find
+   * them - not even the disk cap whose job is to free space.
+   *
+   * Started after the SDK is up and deliberately not awaited: this frees
+   * space, and freeing space is never worth holding a host's startup on
+   * a filesystem that has stopped answering. The seed read above IS
+   * awaited, because a counter that has not been read yet would restart
+   * numbering and overwrite the batches it was meant to skip - so a
+   * storage layer that hangs still stops `init`, just not for this.
+   *
+   * Nothing races: the sweep only removes scratch files older than an
+   * hour, which no write in flight can be.
+   */
+  if (storage instanceof NodeStorageAdapter) {
+    storage.sweepOrphanedScratchFiles({ dir: BATCHES_DIR }).catch((err: unknown) => {
+      console.error('Keewano.init: reclaiming abandoned scratch files failed.', err);
+    });
+  }
 }
 
 export { init };

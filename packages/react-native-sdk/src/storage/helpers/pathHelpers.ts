@@ -17,8 +17,6 @@ import { normalizeRelativePath } from '@keewano/core';
  * URI-aliasing shapes as a defense-in-depth net below the primary
  * `validPath` check the adapter methods invoke first).
  *
- * @param args - Sandbox root and the adapter-relative path.
- * @returns Fully-qualified filesystem path.
  * @throws Error when the relative path is absolute or contains a
  *   `..` segment.
  */
@@ -35,8 +33,6 @@ function resolveUnderRoot({ rootDir, relativePath }: ResolveUnderRootArgs): stri
  * parent path is rejected up-front so the later `writeFile` does not
  * fail with an opaque react-native-fs error.
  *
- * @param args - File-system handle and the fully-qualified path whose
- *   parent must exist.
  * @throws Error when the parent path exists but is not a directory.
  */
 async function ensureParentDir({ rnfs, fullPath }: EnsureParentDirArgs): Promise<void> {

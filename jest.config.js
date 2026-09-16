@@ -21,11 +21,16 @@ module.exports = {
   },
   moduleFileExtensions: ['ts', 'tsx', 'js', 'json'],
   /**
-   * Declare a default SDK platform for tests that drive the transport
-   * directly. Production has no default (sdkTag throws until an SDK calls
-   * configureSdkPlatform at init); this only seeds the test environment.
+   * jest.polyfills.ts runs first: it backfills the TextEncoder /
+   * TextDecoder globals that jest-environment-jsdom lacks, and must do
+   * so before jest.setup.ts imports @keewano/core (whose encoding
+   * layer needs TextEncoder at module load). jest.setup.ts then
+   * declares a default SDK platform for tests that drive the transport
+   * directly. Production has no default (sdkTag throws until an SDK
+   * calls configureSdkPlatform at init); this only seeds the test
+   * environment.
    */
-  setupFiles: ['<rootDir>/jest.setup.ts'],
+  setupFiles: ['<rootDir>/jest.polyfills.ts', '<rootDir>/jest.setup.ts'],
   /**
    * GitLab CI ingests Cobertura XML for coverage; the default
    * `lcov`/`text`/`clover`/`text-summary` set does not produce one

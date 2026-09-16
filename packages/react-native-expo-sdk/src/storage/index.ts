@@ -14,3 +14,4 @@ export type {
 } from '@keewano/core';
 export type { ExpoFileSystemLike, ExpoStorageAdapterArgs } from './types/expoStorageAdapter';
 export { ExpoStorageAdapter } from './expoStorageAdapter';
+export { StorageUnavailableError } from './helpers/errors';

@@ -47,6 +47,18 @@ module.exports = {
         'sonarjs/pseudo-random': 'off',
       },
     },
+    {
+      // These tests exist to execute our own versioned inline stub
+      // text (and the freshly built IIFE bundle) - controlled dynamic
+      // execution of first-party artifacts IS the subject under test.
+      files: [
+        'packages/web-sdk/src/__tests__/snippet.test.ts',
+        'packages/web-sdk/src/snippet/__tests__/installGlobalFacade.test.ts',
+      ],
+      rules: {
+        'sonarjs/code-eval': 'off',
+      },
+    },
   ],
   ignorePatterns: ['dist/', 'node_modules/', 'coverage/'],
 };

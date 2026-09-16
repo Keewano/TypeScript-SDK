@@ -38,6 +38,16 @@ const INITIAL_CAPACITY = 1024;
 const MAX_INITIAL_CAPACITY = 16 * 1024 * 1024;
 
 /**
+ * Ceiling above which `reset()` releases the backing buffer instead of
+ * retaining it. Capacity doubling is otherwise permanent, so a single
+ * oversized event (ERROR_MSG bypasses the 256-char truncation by
+ * design) would pin megabytes for the stream's lifetime. Kept far
+ * above the batch cut threshold so steady-state cycles never
+ * reallocate; a larger constructor hint raises the ceiling with it.
+ */
+const RETAINED_CAPACITY_MAX = 256 * 1024;
+
+/**
  * Wire bytes representing boolean values. The 0x00 byte is reserved on
  * the wire and is never used for booleans, leaving it free for future
  * event types to encode "absent" distinctly from "false".
@@ -54,6 +64,7 @@ class BinaryStream {
   private buffer: Uint8Array;
   private view: DataView;
   private size: number;
+  private readonly initialCapacity: number;
 
   /**
    * @param initialCapacity - Initial buffer size in bytes. Defaults to
@@ -73,6 +84,7 @@ class BinaryStream {
     this.buffer = new Uint8Array(initialCapacity);
     this.view = new DataView(this.buffer.buffer);
     this.size = 0;
+    this.initialCapacity = initialCapacity;
   }
 
   /**
@@ -80,6 +92,13 @@ class BinaryStream {
    */
   get length(): number {
     return this.size;
+  }
+
+  /**
+   * Current backing-buffer size in bytes (allocated, not written).
+   */
+  get capacity(): number {
+    return this.buffer.byteLength;
   }
 
   /**
@@ -95,15 +114,20 @@ class BinaryStream {
   }
 
   /**
-   * Reset the stream to empty state while preserving the allocated
-   * buffer capacity. Subsequent writes begin at offset 0. Useful when
-   * reusing a single stream across multiple serialization cycles to
-   * avoid repeat allocations.
+   * Reset the stream to empty state, preserving the allocated buffer
+   * for reuse across serialization cycles. A buffer that grew past
+   * {@link RETAINED_CAPACITY_MAX} (and past the constructor hint) is
+   * released back to the initial capacity instead - one oversized
+   * event must not pin its peak allocation forever.
    *
    * @returns This stream instance for chaining.
    */
   reset(): this {
     this.size = 0;
+    if (this.buffer.byteLength > Math.max(RETAINED_CAPACITY_MAX, this.initialCapacity)) {
+      this.buffer = new Uint8Array(this.initialCapacity);
+      this.view = new DataView(this.buffer.buffer);
+    }
     return this;
   }
 

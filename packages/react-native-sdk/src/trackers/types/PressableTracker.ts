@@ -1,6 +1,7 @@
 /**
- * dispatcher - Live event accumulator. The tracker emits a
- *   BUTTON_CLICK event string per `onPress` fire.
+ * resolveDispatcher - Resolves the event accumulator that should
+ *   receive a press, called once per `onPress` fire. Defaults to the
+ *   live runtime's dispatcher; override in tests.
  * loadRn - Optional injection point for tests. Defaults to the
  *   lazy `require('react-native')` loader.
  */
@@ -10,9 +11,24 @@ import type { WrappedTouchable } from '../pressableWrapper';
 
 import type { LoadRn } from './rn';
 
+/** `null` means no session is live (before init, after shutdown). */
+type ResolveDispatcher = () => KEventDispatcher | null;
+
 interface PressableTrackerArgs {
-  dispatcher: KEventDispatcher;
+  resolveDispatcher?: ResolveDispatcher;
   loadRn?: LoadRn;
+}
+
+/**
+ * original - Host touchable the wrapper renders and delegates to.
+ * componentLabel - Namespace key the wrapper reports as its
+ *   `displayName`.
+ * resolveDispatcher - See {@link PressableTrackerArgs}.
+ */
+interface BuildPressableWrapperArgs {
+  original: WrappedTouchable;
+  componentLabel: string;
+  resolveDispatcher: ResolveDispatcher;
 }
 
 /**
@@ -50,4 +66,10 @@ interface PressableLikeProps {
   onPress?: (event: unknown) => void;
 }
 
-export type { PatchedSlot, PressableLikeProps, PressableTrackerArgs };
+export type {
+  BuildPressableWrapperArgs,
+  PatchedSlot,
+  PressableLikeProps,
+  PressableTrackerArgs,
+  ResolveDispatcher,
+};

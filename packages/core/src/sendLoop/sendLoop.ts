@@ -18,27 +18,39 @@
  */
 
 import type {
+  DropInMemoryBatchesArgs,
   LoopContext,
+  PurgeRevokedDataArgs,
   PersistAccumulatedBatchArgs,
   RunSendLoopArgs,
   SaveSlicesArgs,
   WaitForSignalOrTimeoutArgs,
 } from './types/sendLoop';
-import type { Codec } from '../codec/types/codec';
+import type { Codec, EncodedBatch } from '../codec/types/codec';
+import type { KEventDispatcher } from '../dispatcher';
 
 import { BinaryCodec } from '../codec/binaryCodec';
 import { consentGate } from '../consent';
-import { BinaryTransport, getCustomEventMapStatus, registerCustomEventMap } from '../network';
-import { deleteBatch, listBatches, loadBatch, reduceStorageSize, saveBatch } from '../persistence';
+import { BinaryCustomEventsRegistrar, BinaryTransport } from '../network';
+import {
+  deleteBatch,
+  isValidFilenameSuffix,
+  listBatches,
+  loadBatch,
+  reduceStorageSize,
+  saveBatch,
+} from '../persistence';
 import { hasControlChar, isByteString } from '../validation';
 
 /**
- * Shared default codec/transport pair: the binary wire format. Both
- * are stateless, so one instance serves every loop and every
- * `persistAccumulatedBatch` caller that does not inject its own.
+ * Shared default codec/transport/registrar trio: the binary wire
+ * format. All are stateless, so one instance serves every loop and
+ * every `persistAccumulatedBatch` caller that does not inject its
+ * own.
  */
 const DEFAULT_CODEC: Codec = new BinaryCodec();
 const DEFAULT_TRANSPORT = new BinaryTransport();
+const DEFAULT_REGISTRAR = new BinaryCustomEventsRegistrar();
 
 /** Idle window between iterations when no dispatcher signal arrives. */
 const DEFAULT_IDLE_MS = 30_000;
@@ -77,10 +89,17 @@ async function runSendLoop(args: RunSendLoopArgs): Promise<void> {
     customEventSet: args.customEventSet,
     customEventsRegistered: false,
     configErrorLogged: false,
+    registrarErrorLogged: false,
+    lastRetryableReason: null,
+    filenameSuffix: args.filenameSuffix,
     getExtraHeaders: args.getExtraHeaders,
     extraHeaders: {},
     codec: args.codec ?? DEFAULT_CODEC,
     transport: args.transport ?? DEFAULT_TRANSPORT,
+    registrar: args.customEventsRegistrar ?? DEFAULT_REGISTRAR,
+    onShipPass: args.onShipPass,
+    onPassEnd: args.onPassEnd,
+    onBatchesSealed: args.onBatchesSealed,
   };
   /**
    * A codec/transport pair that disagree on the wire format would
@@ -93,6 +112,24 @@ async function runSendLoop(args: RunSendLoopArgs): Promise<void> {
     throw new Error(
       `runSendLoop: codec "${ctx.codec.id}" does not match transport "${ctx.transport.codecId}"`,
     );
+  }
+  /**
+   * The registrar defaults to the binary protocol, so a REST
+   * transport wired without an explicit one would probe the binary
+   * endpoint every tick and never allow a ship pass.
+   */
+  if (ctx.registrar.codecId !== ctx.transport.codecId) {
+    throw new Error(
+      `runSendLoop: registrar "${ctx.registrar.codecId}" does not match transport "${ctx.transport.codecId}"`,
+    );
+  }
+  /**
+   * A malformed suffix throws inside every save, where the throw
+   * collapses into a dropped batch - the whole session's persistence
+   * fails without a trace. Reject it before the first write.
+   */
+  if (ctx.filenameSuffix !== undefined && !isValidFilenameSuffix(ctx.filenameSuffix)) {
+    throw new Error(`runSendLoop: invalid filenameSuffix "${ctx.filenameSuffix}"`);
   }
   const idleMs = args.idleMs ?? DEFAULT_IDLE_MS;
 
@@ -166,24 +203,34 @@ async function runSendLoop(args: RunSendLoopArgs): Promise<void> {
  * registration failure aborts this iteration's ship pass but leaves
  * the on-disk queue intact so the next tick retries from scratch.
  * `'keep'` (Pending): no-op; events accumulate locally.
+ *
+ * Whatever it decided, `onPassEnd` fires afterwards, so a host waiting
+ * for the loop to reach a boundary is told about the passes that
+ * shipped nothing as well as the ones that did.
  */
 async function runConsentDecision(ctx: LoopContext): Promise<void> {
-  const decision = readConsentSafely(ctx);
-  if (decision === 'delete') {
-    await deleteAllBatches(ctx);
-    return;
+  try {
+    const decision = readConsentSafely(ctx);
+    if (decision === 'delete') {
+      await deleteAllBatches(ctx);
+      return;
+    }
+    if (decision !== 'send') return;
+    const ready = await ensureCustomEventsRegistered(ctx);
+    if (ready) await runShipPass(ctx);
+  } finally {
+    /**
+     * Every branch above is a boundary to a host waiting for one, the
+     * ones that shipped nothing included: the exit drain otherwise
+     * waits its whole grace for a pass that a refused registration or
+     * an unreadable queue will never announce.
+     */
+    try {
+      ctx.onPassEnd?.();
+    } catch {
+      /** A host observer must never kill the loop. */
+    }
   }
-  if (decision !== 'send') return;
-  /**
-   * Resolve the host's extra headers only once a ship pass is actually
-   * going to run, so the provider (which may mint a short-lived token)
-   * is not invoked on every idle / Pending / Denied tick. Resolved
-   * fresh at the start of each pass so a token refreshed between
-   * passes takes effect.
-   */
-  ctx.extraHeaders = await resolveExtraHeaders(ctx);
-  const ready = await ensureCustomEventsRegistered(ctx);
-  if (ready) await runShipPass(ctx);
 }
 
 /**
@@ -206,8 +253,13 @@ async function safePersistDispatcherSwap(ctx: LoopContext): Promise<void> {
 }
 
 /**
- * Resolve and sanitize the host's extra-header provider for this ship
- * pass. The send loop is contracted never to die, so untrusted
+ * Resolve and sanitize the host's extra-header provider. Invoked only
+ * when a request is actually about to go out - once before the
+ * one-shot registration exchange, and once per ship pass that found
+ * queued files - so a provider that mints a short-lived token over
+ * the network is never charged for an idle tick, while a token
+ * refreshed between passes still takes effect on the next one.
+ * The send loop is contracted never to die, so untrusted
  * provider output is hardened here rather than allowed to reach the
  * swallow-everything send path: a throw, a non-object return, or an
  * individual header that is not header-safe degrades to dropping that
@@ -292,22 +344,55 @@ function shouldDropBeforePersist(ctx: LoopContext): boolean {
 /**
  * Reset both in-batch buffers when consent flipped to Denied
  * mid-wait. Both resets are best-effort: a throw from either would
- * otherwise escape runSendLoop and kill the background sender on
+ * otherwise escape the calling loop and kill background delivery on
  * the very path that protects user privacy. Each reset is wrapped
  * independently so one bad buffer cannot block the other.
  */
-function dropInMemoryBatches(ctx: LoopContext): void {
+function dropInMemoryBatches({ dispatcher }: DropInMemoryBatchesArgs): void {
   try {
-    ctx.dispatcher.currentInBatch.resetForReuse();
+    dispatcher.currentInBatch.resetForReuse();
   } catch {
     /** Best-effort cleanup; keep the loop alive. */
   }
   try {
-    ctx.dispatcher.currentSendingBatch.resetForReuse();
+    dispatcher.currentSendingBatch.resetForReuse();
   } catch {
     /** Best-effort cleanup; keep the loop alive. */
   }
 }
+
+/**
+ * Purge everything a consent revocation covers: both in-memory
+ * buffers, then the queued files, in an order no throw can bend.
+ * The two resets are isolated so a throw from the first cannot skip
+ * the second, the queued delete runs regardless, and the FIRST reset
+ * error is rethrown only after the storage cleanup - the platform
+ * shutdown paths on web and React Native both encode exactly this
+ * invariant, and a second copy of it would be free to drift.
+ */
+async function purgeRevokedData(args: PurgeRevokedDataArgs): Promise<void> {
+  const { dispatcher, deleteQueued } = args;
+  let resetError: unknown = null;
+  try {
+    dispatcher.currentInBatch.resetForReuse();
+  } catch (err: unknown) {
+    resetError = err;
+  }
+  try {
+    dispatcher.currentSendingBatch.resetForReuse();
+  } catch (err: unknown) {
+    if (resetError === null) resetError = err;
+  }
+  await deleteQueued();
+  if (resetError !== null) throw resetError;
+}
+
+/**
+ * Per-dispatcher tail of the persist chain driving the serialization
+ * documented on {@link persistAccumulatedBatch}. Weak so an abandoned
+ * dispatcher releases its slot with the dispatcher itself.
+ */
+const persistChains = new WeakMap<KEventDispatcher, Promise<void>>();
 
 /**
  * Persist whatever the dispatcher has accumulated since the last
@@ -332,6 +417,14 @@ function dropInMemoryBatches(ctx: LoopContext): void {
  * Called from both the send loop (per-iteration tick after wake)
  * and `Keewano.shutdown` (final flush after the loop has aborted).
  *
+ * Calls against one dispatcher are serialized, never dropped: the
+ * loop tick and a host's direct flush (exit, shutdown) share the
+ * dispatcher's single sending slot, and the swap-throw recovery in
+ * `persistSwappedBatch` cannot tell a peer parked on a slow save
+ * apart from genuinely-stale state - concurrently it would reset the
+ * peer's mid-save batch, and the peer's cleanup would then reset what
+ * the re-swap made the LIVE in-batch, wiping events reported between.
+ *
  * @returns `true` when every sealed slice landed on disk OR there was
  *   nothing to persist; `false` when any slice save failed or the
  *   swap-recovery path dropped a prior payload. The send loop ignores
@@ -339,7 +432,35 @@ function dropInMemoryBatches(ctx: LoopContext): void {
  *   promised durability to its host (the Node relay's
  *   `reportUserBatch`) surfaces `false` as a failure.
  */
-async function persistAccumulatedBatch(args: PersistAccumulatedBatchArgs): Promise<boolean> {
+function persistAccumulatedBatch(args: PersistAccumulatedBatchArgs): Promise<boolean> {
+  const previous = persistChains.get(args.dispatcher);
+  /**
+   * Only a call that finds a persist in flight defers. Otherwise the
+   * swap runs in the caller's own tick, which the exit path depends
+   * on: a page being torn down may never reach a later microtask.
+   */
+  const current =
+    previous === undefined
+      ? persistSwappedBatch(args)
+      : previous.then(() => persistSwappedBatch(args));
+  /**
+   * The stored tail must never reject, or one failed persist would
+   * poison every later call on the dispatcher; the caller still sees
+   * `current`'s own rejection. Clearing the settled tail is what
+   * keeps the next idle call on the synchronous path.
+   */
+  const release = (): void => {
+    if (persistChains.get(args.dispatcher) === tail) {
+      persistChains.delete(args.dispatcher);
+    }
+  };
+  const tail: Promise<void> = current.then(release, release);
+  persistChains.set(args.dispatcher, tail);
+  return current;
+}
+
+/** Unserialized body of {@link persistAccumulatedBatch}; reach it only through the chain. */
+async function persistSwappedBatch(args: PersistAccumulatedBatchArgs): Promise<boolean> {
   const { storage, dispatcher, dir, allocBatchNum } = args;
   const codec = args.codec ?? DEFAULT_CODEC;
   let persisted = true;
@@ -373,6 +494,14 @@ async function persistAccumulatedBatch(args: PersistAccumulatedBatchArgs): Promi
     return persisted;
   }
   const finalBatchEndTime = Math.floor(Date.now() / 1000);
+  /**
+   * From here until the `finally`, the queue directory lags this
+   * persist: sealed batches exist that a concurrent ship pass's
+   * listing may not show. Bracket the window on the dispatcher - the
+   * only object every queue writer shares - so such a pass can void
+   * its stale observation instead of reporting the queue drained.
+   */
+  dispatcher.notePersistStart();
   try {
     const slices = sending.builder.seal({ finalBatchEndTime });
     /**
@@ -386,9 +515,19 @@ async function persistAccumulatedBatch(args: PersistAccumulatedBatchArgs): Promi
     if (slices.length === 0 || slices.some((slice) => slice.payload.length === 0)) {
       return false;
     }
-    const saved = await saveSlices({ storage, dir, codec, sending, slices, allocBatchNum });
+    const saved = await saveSlices({
+      storage,
+      dir,
+      codec,
+      sending,
+      slices,
+      allocBatchNum,
+      ...(args.filenameSuffix === undefined ? {} : { filenameSuffix: args.filenameSuffix }),
+      ...(args.onBatchesSealed === undefined ? {} : { onBatchesSealed: args.onBatchesSealed }),
+    });
     persisted = persisted && saved;
   } finally {
+    dispatcher.notePersistEnd();
     /**
      * Always reset so the next swap is clean. Sub-batches that
      * failed to save are accepted as lost; the next swap picks up
@@ -421,6 +560,8 @@ async function persistDispatcherSwap(ctx: LoopContext): Promise<void> {
     dir: ctx.batchesDir,
     allocBatchNum: ctx.getNextBatchNum,
     codec: ctx.codec,
+    ...(ctx.filenameSuffix === undefined ? {} : { filenameSuffix: ctx.filenameSuffix }),
+    ...(ctx.onBatchesSealed === undefined ? {} : { onBatchesSealed: ctx.onBatchesSealed }),
   });
 }
 
@@ -440,28 +581,52 @@ async function persistDispatcherSwap(ctx: LoopContext): Promise<void> {
  *   failed (that slice and every later one in the swap are dropped).
  */
 async function saveSlices(args: SaveSlicesArgs): Promise<boolean> {
-  const { storage, dir, codec, sending, slices, allocBatchNum } = args;
-  for (const slice of slices) {
+  const { storage, dir, codec, sending, slices, allocBatchNum, filenameSuffix } = args;
+  /**
+   * Identify every slice before the first write so the optional
+   * observer sees the whole swap synchronously - on the browser exit
+   * path nothing after the first `await` is guaranteed to run.
+   */
+  let batches: EncodedBatch[];
+  try {
+    batches = slices.map((slice) => ({
+      codecId: codec.id,
+      metadata: {
+        userId: sending.userId,
+        dataSessionId: sending.dataSessionId,
+        batchVersion: sending.batchVersion,
+        customEventsVersion: sending.customEventsVersion,
+      },
+      batchNum: allocBatchNum(),
+      batchStartTime: slice.batchStartTime,
+      batchEndTime: slice.batchEndTime,
+      payload: slice.payload,
+    }));
+  } catch {
+    /**
+     * The allocator is host-supplied. A throw reports a failed
+     * persist, the same way a failed write does, rather than
+     * rejecting a helper whose callers treat `false` as the failure
+     * signal.
+     */
+    return false;
+  }
+  try {
+    args.onBatchesSealed?.(batches);
+  } catch {
+    /** Observing must never cost the caller its persistence. */
+  }
+  for (const batch of batches) {
     try {
       await saveBatch({
         storage,
         dir,
         codec,
-        batch: {
-          codecId: codec.id,
-          metadata: {
-            userId: sending.userId,
-            dataSessionId: sending.dataSessionId,
-            batchVersion: sending.batchVersion,
-            customEventsVersion: sending.customEventsVersion,
-          },
-          batchNum: allocBatchNum(),
-          batchStartTime: slice.batchStartTime,
-          batchEndTime: slice.batchEndTime,
-          payload: slice.payload,
-        },
+        batch,
+        ...(filenameSuffix === undefined ? {} : { filenameSuffix }),
       });
-    } catch {
+    } catch (error: unknown) {
+      console.error('Keewano: batch save failed; dropping.', error);
       return false;
     }
   }
@@ -487,33 +652,39 @@ async function deleteAllBatches(ctx: LoopContext): Promise<void> {
     /** Listing failed (permissions / I/O); retry next iteration. */
     return;
   }
+  let wiped = true;
   for (const file of files) {
     try {
       await deleteBatch({ storage: ctx.storage, path: file.path });
     } catch {
       /** Per-file delete failed; skip and let the next iteration retry. */
+      wiped = false;
     }
   }
+  if (wiped) noteQueueDrained(ctx);
 }
 
 /**
  * One-shot per-session check that the server already knows the
  * host's custom-events schema. Returns `true` when the ship pass is
- * allowed to proceed (no schema declared, or the server is up to
- * date), `false` when the registration step is still pending and the
+ * allowed to proceed (no schema declared, a declared schema that is
+ * empty, or the server is up to date), `false` when the registration
+ * step is still pending and the caller should retry next iteration.
  * caller should retry next iteration.
  *
- * Sequence on first call when a schema IS declared:
+ * Sequence on first call when a schema IS declared (driven through
+ * the wired `CustomEventsRegistrar`, so the same orchestration
+ * serves every registration protocol):
  *
- *   1. `GET /custom` with `K-CustomEventHash = customEventSet.version`.
+ *   1. Probe `registrar.getStatus` with `customEventSet.version`.
  *   2. `'known'` -> mark registered, allow ship.
- *   3. `'needs-registration'` -> upload `customEventSet.gzipData`
- *      via `POST /custom`; on success mark registered, otherwise
+ *   3. `'needs-registration'` -> upload the map via
+ *      `registrar.register`; on success mark registered, otherwise
  *      retry next iteration.
- *   4. `'error'` -> retry next iteration.
+ *   4. `'error'` -> warn once per loop session, retry next iteration.
  *
- * `AbortError` / `TimeoutError` from `getCustomEventMapStatus` /
- * `registerCustomEventMap` are caught here: shutdown's abort signal
+ * `AbortError` / `TimeoutError` from the registrar calls are caught
+ * here: shutdown's abort signal
  * fires every in-flight `fetch` and we don't want the loop to die.
  * The next iteration short-circuits on `ctx.signal.aborted` before
  * reaching this helper. A `TypeError` / `RangeError` is a
@@ -522,11 +693,21 @@ async function deleteAllBatches(ctx: LoopContext): Promise<void> {
  * via `logConfigError` so the misconfiguration is visible.
  */
 async function ensureCustomEventsRegistered(ctx: LoopContext): Promise<boolean> {
-  if (ctx.customEventSet === undefined) return true;
+  /**
+   * Version `0` is the wire protocol's "no schema registered", and a
+   * set carrying it describes nothing to register - a host that ran
+   * codegen before declaring its first event has one. Every batch is
+   * held until registration succeeds, so treating that as a schema
+   * would put the whole upload path behind a call with nothing to
+   * answer it. The other SDKs gate on the version directly; this
+   * gated only on the object, so an empty set slipped past.
+   */
+  if (ctx.customEventSet === undefined || ctx.customEventSet.version === 0) return true;
   if (ctx.customEventsRegistered) return true;
+  ctx.extraHeaders = await resolveExtraHeaders(ctx);
   let status;
   try {
-    status = await getCustomEventMapStatus({
+    status = await ctx.registrar.getStatus({
       baseUrl: ctx.endpoint,
       apiKey: ctx.apiKey,
       version: ctx.customEventSet.version,
@@ -541,10 +722,13 @@ async function ensureCustomEventsRegistered(ctx: LoopContext): Promise<boolean> 
     ctx.customEventsRegistered = true;
     return true;
   }
-  if (status !== 'needs-registration') return false;
+  if (status !== 'needs-registration') {
+    logRegistrarUnavailable(ctx);
+    return false;
+  }
   let posted = false;
   try {
-    posted = await registerCustomEventMap({
+    posted = await ctx.registrar.register({
       baseUrl: ctx.endpoint,
       apiKey: ctx.apiKey,
       ceSet: ctx.customEventSet,
@@ -555,7 +739,10 @@ async function ensureCustomEventsRegistered(ctx: LoopContext): Promise<boolean> 
     logConfigError(ctx, error);
     return false;
   }
-  if (!posted) return false;
+  if (!posted) {
+    logRegistrarRejected(ctx);
+    return false;
+  }
   ctx.customEventsRegistered = true;
   return true;
 }
@@ -573,12 +760,16 @@ async function ensureCustomEventsRegistered(ctx: LoopContext): Promise<boolean> 
  * we don't burn the 30 s wait budget reissuing the same failures.
  */
 async function runShipPass(ctx: LoopContext): Promise<void> {
-  let files;
+  /**
+   * Sampled before the listing: the pass's view of the queue is only
+   * trustworthy when no persist was mid-write as the pass began and
+   * none sealed while it ran.
+   */
+  const persistEpochAtStart = ctx.dispatcher.persistEpoch;
+  const persistPendingAtStart = ctx.dispatcher.hasPendingPersist;
+  let listed;
   try {
-    files = (await listBatches({ storage: ctx.storage, dir: ctx.batchesDir })).slice(
-      0,
-      ctx.batchesPerCycle,
-    );
+    listed = await listBatches({ storage: ctx.storage, dir: ctx.batchesDir });
   } catch {
     /**
      * Listing failed (permissions / I/O). Swallow so an unhandled
@@ -587,11 +778,52 @@ async function runShipPass(ctx: LoopContext): Promise<void> {
      */
     return;
   }
+  const files = listed.slice(0, ctx.batchesPerCycle);
+  if (files.length > 0) {
+    ctx.extraHeaders = await resolveExtraHeaders(ctx);
+  }
+  let removed = 0;
   for (const file of files) {
+    /** An aborted pass reports nothing: teardown is not a queue observation. */
     if (ctx.signal.aborted) return;
     const ok = await shipOneBatch(ctx, file.path);
-    if (!ok) return;
+    if (!ok) break;
+    removed += 1;
   }
+  /**
+   * A pass that overlapped a concurrent persist (a host's exit flush
+   * sealing a batch whose write is still landing) reports nothing:
+   * its listing is stale, and a false "queue drained" would let the
+   * host send at exit past a batch that is already committed to the
+   * queue. The next pass re-observes and reports.
+   */
+  if (persistPendingAtStart || ctx.dispatcher.persistEpoch !== persistEpochAtStart) {
+    return;
+  }
+  /**
+   * Report against the FULL listing, not the per-cycle slice: files
+   * beyond the cycle cap are still queued, and an observer acting on
+   * "the queue is empty" must not be told so while they exist.
+   */
+  const remaining = listed.length - removed;
+  if (remaining === 0) noteQueueDrained(ctx);
+  try {
+    ctx.onShipPass?.({ remaining });
+  } catch {
+    /** A host observer must never kill the loop. */
+  }
+}
+
+/**
+ * Re-arm the retryable-failure log now that the on-disk queue is
+ * empty. The suppression state belongs to the outage that stalled a
+ * given queue; once nothing is left to deliver - the last batches
+ * shipped, were permanently rejected, or were wiped on a consent
+ * revoke - that outage is over, so the next one must be logged even
+ * when it reports the very same reason.
+ */
+function noteQueueDrained(ctx: LoopContext): void {
+  ctx.lastRetryableReason = null;
 }
 
 /**
@@ -669,8 +901,12 @@ async function shipOneBatch(ctx: LoopContext, path: string): Promise<boolean> {
         extraHeaders: ctx.extraHeaders,
       },
     });
-    if (result.kind === 'ok') delivered = true;
+    if (result.kind === 'ok') {
+      delivered = true;
+      ctx.lastRetryableReason = null;
+    }
     if (result.kind === 'fatal') fatalReason = result.reason;
+    if (result.kind === 'retryable') logRetryableReason(ctx, result.reason);
   } catch (error: unknown) {
     /**
      * AbortError / TimeoutError re-raised by the transport land here.
@@ -743,6 +979,50 @@ function logConfigError(ctx: LoopContext, error: unknown): void {
   if (ctx.configErrorLogged) return;
   ctx.configErrorLogged = true;
   console.error('Keewano: delivery disabled by a configuration error; fix the SDK config.', error);
+}
+
+/**
+ * Warn once per loop session when the registrar probe reports
+ * `'error'`. The status is transient by contract, but a persistent
+ * one blocks every ship pass while batches pile up on disk, and only
+ * thrown TypeError / RangeError reach `logConfigError` - without this
+ * the stall is invisible.
+ */
+function logRegistrarUnavailable(ctx: LoopContext): void {
+  if (ctx.registrarErrorLogged) return;
+  ctx.registrarErrorLogged = true;
+  console.warn('Keewano: custom-events registration unavailable; will retry.');
+}
+
+/**
+ * Report a registration the server refused. Distinct from the
+ * unavailable case above, which is transient: a refusal means the
+ * schema itself is unacceptable, and since delivery is gated on
+ * registration, NOTHING ships until it is fixed - a session that
+ * looks alive and sends nothing forever, with no other symptom. Same
+ * one-shot flag, because the loop retries every cycle.
+ */
+function logRegistrarRejected(ctx: LoopContext): void {
+  if (ctx.registrarErrorLogged) return;
+  ctx.registrarErrorLogged = true;
+  console.error(
+    'Keewano: the server refused the custom-events schema; no events can be sent until it is accepted. Check the generated event definitions against the ones the project expects.',
+  );
+}
+
+/**
+ * Log a retryable delivery failure when its reason changes. Retries
+ * recur every cycle, so an unconditional log would spam the console
+ * for the whole outage; consecutive-duplicate suppression surfaces
+ * the start of a stall (and any morph, e.g. an HTTP 500 turning into
+ * a timeout) exactly once. A successful delivery re-arms the log, as
+ * does {@link noteQueueDrained} for the other ways the queue empties,
+ * so the next outage is visible again.
+ */
+function logRetryableReason(ctx: LoopContext, reason: string): void {
+  if (ctx.lastRetryableReason === reason) return;
+  ctx.lastRetryableReason = reason;
+  console.warn('Keewano: batch delivery failed; will retry.', reason);
 }
 
 /**
@@ -824,4 +1104,11 @@ async function waitForSignalOrTimeout({
   }
 }
 
-export { persistAccumulatedBatch, runSendLoop };
+export {
+  DEFAULT_IDLE_MS,
+  dropInMemoryBatches,
+  persistAccumulatedBatch,
+  purgeRevokedData,
+  runSendLoop,
+  waitForSignalOrTimeout,
+};

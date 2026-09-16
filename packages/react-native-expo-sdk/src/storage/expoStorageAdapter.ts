@@ -25,6 +25,7 @@ import type {
   ExpoFileInfo,
   ExpoFileSystemLike,
   ExpoStorageAdapterArgs,
+  ScratchOrphan,
 } from './types/expoStorageAdapter';
 
 import {
@@ -43,6 +44,7 @@ import {
   generateOpId,
   globToRegex,
   isScratchSibling,
+  parseScratchSibling,
   validPath,
 } from '@keewano/core';
 
@@ -51,6 +53,17 @@ import { computeRootDir, ensureParentDir, resolveUnderRoot } from './helpers/pat
 
 const BASE64_OPTIONS = { encoding: 'base64' } as const;
 const IDEMPOTENT_DELETE = { idempotent: true } as const;
+
+/**
+ * Canonical batch-file basename. The persistence layer keeps its
+ * filename codec private, so the shape is restated here for the
+ * orphan sweep's skip test only. Drift is not symmetric: a name this
+ * rejects merely takes the generic classify path and costs one stat,
+ * but anything it accepts is never recursed into, so a directory whose
+ * name matched would hide every orphan beneath it. The SDK writes no
+ * such directory; widen this pattern only with that in mind.
+ */
+const BATCH_FILE_NAME_PATTERN = /^\d+_\d+(?:_[0-9a-f]{8,16})?\.kwub$/;
 
 class ExpoStorageAdapter implements StorageAdapter {
   /**
@@ -74,16 +87,13 @@ class ExpoStorageAdapter implements StorageAdapter {
   private readonly rootDir: string;
   private readonly fileSystem: ExpoFileSystemLike;
   private readonly mutations: MutationCoordinator;
+  /** Orphan-sweep promise, kicked lazily by the first mutation; `null` until then. */
+  private scratchSweepDone: Promise<void> | null = null;
 
   /**
-   * Construct an adapter bound to the host's Expo runtime modules.
-   * The native bindings are loaded lazily so a host that imports the
-   * adapter without instantiating it pays no startup cost.
+   * Native bindings load lazily, so importing without instantiating costs nothing.
    *
-   * @param args - Optional sandbox root override and DI hooks for
-   *   `expo-file-system`. Pass a mock in tests.
-   * @throws Error when `args.rootDir` is omitted and the runtime does
-   *   not expose `documentDirectory`.
+   * @throws Error when `args.rootDir` is omitted and the runtime has no `documentDirectory`.
    */
   constructor(args: ExpoStorageAdapterArgs = {}) {
     /* istanbul ignore next - native loader fallback only fires outside test runtime */
@@ -102,39 +112,157 @@ class ExpoStorageAdapter implements StorageAdapter {
   }
 
   /**
-   * Bytes are base64-encoded (Expo's `writeAsStringAsync` is
-   * string-only) and routed through a per-operation scratch sibling
-   * moved into place via `moveAsync`. See the class-level JSDoc for
-   * the overwrite atomicity caveat.
-   *
-   * Scratch sibling names embed a per-operation id (`__kwtmp__.<id>`
-   * and `__kwbak__.<id>`) so a real user file living at
-   * `${fullUri}.tmp` or `${fullUri}.bak` cannot collide with our
-   * scratch state: serialization protects only the destination URI,
-   * not arbitrary suffixes a caller might already be using.
-   *
-   * @param args - Adapter-relative path and binary contents.
+   * Start the orphan sweep on first use and share the one promise
+   * afterwards. Kicked lazily from the mutation gates rather than the
+   * constructor, so constructing an adapter performs no I/O and no
+   * async work a constructor cannot await.
+   */
+  private ensureScratchSweep(): Promise<void> {
+    this.scratchSweepDone ??= this.sweepOrphanedScratch();
+    return this.scratchSweepDone;
+  }
+
+  /**
+   * One-shot crash recovery for scratch siblings an interrupted
+   * mutation left behind, mirroring the bare-RN adapter: `tmp` and
+   * `del` orphans are dropped, a `bak` orphan is restored when its
+   * destination is missing (it can hold the only copy after a crash
+   * between the rename-aside and the commit) and dropped otherwise.
+   * Orphans match no batch pattern and are invisible to the storage
+   * cap, so without this pass they accumulate unboundedly. Candidates
+   * resolve under the destination's mutation key; every adapter
+   * operation gates on the sweep, so callers never observe
+   * pre-recovery contents. Best-effort throughout.
+   */
+  private async sweepOrphanedScratch(): Promise<void> {
+    let orphans: ScratchOrphan[];
+    try {
+      orphans = await this.collectScratchOrphans(this.rootDir);
+    } catch {
+      /** Missing root (fresh install) or an unreadable dir - nothing to sweep. */
+      return;
+    }
+    for (const orphan of orphans) {
+      try {
+        await this.mutations.run({
+          key: orphan.destinationUri,
+          op: () => this.resolveScratchOrphan(orphan),
+        });
+      } catch {
+        /** One stubborn orphan must not abort the rest of the sweep. */
+      }
+    }
+  }
+
+  /**
+   * Recursively list scratch-named files under `dirUri`. Entry type is
+   * not exposed by `readDirectoryAsync`, so an entry that is neither a
+   * scratch sibling nor a batch file needs a `getInfoAsync` to decide
+   * whether to recurse into it. Those stats fan out through
+   * `Promise.all` exactly like `listFiles` does: every adapter
+   * operation waits on this sweep, so a stat-per-await walk would make
+   * a large queued-batch directory delay the launch's first read.
+   */
+  private async collectScratchOrphans(dirUri: string): Promise<ScratchOrphan[]> {
+    const names = await this.fileSystem.readDirectoryAsync(dirUri);
+    /** The sandbox root carries a trailing slash; joining it verbatim would double the separator. */
+    const base = dirUri.endsWith('/') ? dirUri.slice(0, -1) : dirUri;
+    const out: ScratchOrphan[] = [];
+    const unclassified: string[] = [];
+    for (const name of names) {
+      const entryUri = `${base}/${name}`;
+      const parsed = parseScratchSibling(name);
+      if (parsed !== null) {
+        out.push({
+          scratchUri: entryUri,
+          destinationUri: `${base}/${parsed.destinationName}`,
+          kind: parsed.kind,
+        });
+        continue;
+      }
+      /** Queued batches are the bulk of the tree and are always files. */
+      if (BATCH_FILE_NAME_PATTERN.test(name)) {
+        continue;
+      }
+      unclassified.push(entryUri);
+    }
+    const nested = await Promise.all(
+      unclassified.map((entryUri) => this.collectNestedOrphans(entryUri)),
+    );
+    for (const orphans of nested) {
+      out.push(...orphans);
+    }
+    return out;
+  }
+
+  /**
+   * Classify one unclassified entry and walk it when it is a
+   * directory. Every failure resolves to an empty list: an entry that
+   * vanished mid-walk has nothing to recurse into, and a single
+   * unreadable subtree must not abort recovery elsewhere.
+   */
+  private async collectNestedOrphans(entryUri: string): Promise<ScratchOrphan[]> {
+    let info: ExpoFileInfo;
+    try {
+      info = await this.fileSystem.getInfoAsync(entryUri);
+    } catch {
+      return [];
+    }
+    if (!info.exists || info.isDirectory !== true) {
+      return [];
+    }
+    try {
+      return await this.collectScratchOrphans(entryUri);
+    } catch {
+      return [];
+    }
+  }
+
+  /** Drop a `tmp`/`del` orphan; restore a `bak` orphan whose destination is gone, drop it otherwise. */
+  private async resolveScratchOrphan(orphan: ScratchOrphan): Promise<void> {
+    if (orphan.kind !== 'bak') {
+      await this.bestEffortDelete(orphan.scratchUri);
+      return;
+    }
+    let info: ExpoFileInfo;
+    try {
+      info = await this.fileSystem.getInfoAsync(orphan.destinationUri);
+    } catch {
+      /** Cannot classify - keep the backup rather than risk dropping the only copy. */
+      return;
+    }
+    if (info.exists) {
+      await this.bestEffortDelete(orphan.scratchUri);
+      return;
+    }
+    try {
+      await this.fileSystem.moveAsync({ from: orphan.scratchUri, to: orphan.destinationUri });
+    } catch {
+      /** Restore is best-effort; the next session's sweep retries. */
+    }
+  }
+
+  /**
+   * Bytes are base64-encoded (Expo's `writeAsStringAsync` is string-only) and staged through a
+   * per-operation scratch sibling moved into place (overwrite atomicity caveat: see class JSDoc).
+   * Scratch names embed the op id so a real user file at `${uri}.tmp`/`.bak` cannot collide -
+   * serialization protects only the destination URI, not arbitrary caller-chosen suffixes.
    */
   async writeFile({ path, bytes }: WriteFileArgs): Promise<void> {
     if (!(bytes instanceof Uint8Array)) {
       throw new TypeError('writeFile: not a Uint8Array');
     }
     validPath({ path, fnName: 'writeFile' });
+    /** Mutations wait for the orphan sweep so it cannot race a live scratch sibling. */
+    await this.ensureScratchSweep();
     const fullUri = resolveUnderRoot({ rootDir: this.rootDir, relativePath: path });
-    /**
-     * `opId` is a uniqueness suffix, NOT a security token. The
-     * mutation queue prevents two live writes sharing the same
-     * destination; the shared helper prefers `crypto.getRandomValues`
-     * so SAST tools stop flagging `Math.random`.
-     */
+    // opId is a uniqueness suffix, not a security token; the shared helper uses
+    // crypto.getRandomValues so SAST tools do not flag Math.random.
     const opId = generateOpId();
     const tmpUri = `${fullUri}.${SCRATCH_TMP_INFIX}.${opId}`;
     const backupUri = `${fullUri}.${SCRATCH_BAK_INFIX}.${opId}`;
 
-    /**
-     * Serialize concurrent writes to the same logical path so two
-     * overlapping calls cannot stomp each other mid-flight.
-     */
+    // Serialize concurrent writes to the same logical path.
     await this.mutations.run({
       key: fullUri,
       op: () => this.doWriteFile(tmpUri, fullUri, backupUri, bytes),
@@ -169,6 +297,11 @@ class ExpoStorageAdapter implements StorageAdapter {
    * so a failed move of the tmp file can be undone. Returns `true`
    * when a backup was made. Throws when the destination resolves to a
    * directory (fail-closed against unknown / non-`false` `isDirectory`).
+   *
+   * `backupUri` carries this operation's own opId, so nothing can
+   * already occupy it and it is never pre-cleaned here: a crashed
+   * prior run's backup lives under a different opId and is reclaimed
+   * by the launch-time orphan sweep instead.
    */
   private async moveExistingToBackup(fullUri: string, backupUri: string): Promise<boolean> {
     /**
@@ -207,11 +340,6 @@ class ExpoStorageAdapter implements StorageAdapter {
     if (latest.isDirectory !== false) {
       throw new Error('writeFile: destination path is a directory');
     }
-    /**
-     * Clear any stale backup left by a crashed prior run, then move
-     * the current contents aside.
-     */
-    await this.bestEffortDelete(backupUri);
     /**
      * Race-recover moveAsync failures via the three-state probe so a
      * probe that itself throws is not silently conflated with "backup
@@ -357,6 +485,8 @@ class ExpoStorageAdapter implements StorageAdapter {
    */
   async readFile({ path }: ReadFileArgs): Promise<Uint8Array | null> {
     validPath({ path, fnName: 'readFile' });
+    /** Reads wait for the sweep too: a cold start must never observe pre-recovery contents. */
+    await this.ensureScratchSweep();
     const fullUri = resolveUnderRoot({ rootDir: this.rootDir, relativePath: path });
 
     let b64: string;
@@ -411,6 +541,8 @@ class ExpoStorageAdapter implements StorageAdapter {
    */
   async deleteFile({ path }: DeleteFileArgs): Promise<void> {
     validPath({ path, fnName: 'deleteFile' });
+    /** Mutations wait for the orphan sweep so it cannot race a live scratch sibling. */
+    await this.ensureScratchSweep();
     const fullUri = resolveUnderRoot({ rootDir: this.rootDir, relativePath: path });
 
     /**
@@ -636,6 +768,8 @@ class ExpoStorageAdapter implements StorageAdapter {
    */
   async listFiles({ dir, pattern }: ListFilesArgs): Promise<string[]> {
     validPath({ path: dir, fnName: 'listFiles' });
+    /** Reads wait for the sweep too: a cold start must never observe pre-recovery contents. */
+    await this.ensureScratchSweep();
     const fullUri = resolveUnderRoot({ rootDir: this.rootDir, relativePath: dir });
     /**
      * Route the initial probe through `recoverMissingOrRethrow` so a
@@ -764,6 +898,8 @@ class ExpoStorageAdapter implements StorageAdapter {
    */
   async fileSize({ path }: FileSizeArgs): Promise<number | null> {
     validPath({ path, fnName: 'fileSize' });
+    /** Reads wait for the sweep too: a cold start must never observe pre-recovery contents. */
+    await this.ensureScratchSweep();
     const fullUri = resolveUnderRoot({ rootDir: this.rootDir, relativePath: path });
 
     /**

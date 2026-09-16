@@ -9,7 +9,12 @@ import type { ReportABTestGroupAssignmentArgs } from './types/progression';
 
 import { KEvents } from '../events';
 
-import { MAX_STRING_LENGTH, runWhenReady, truncateString } from './reportHelpers';
+import {
+  MAX_STRING_LENGTH,
+  dropDanglingSurrogate,
+  runWhenReady,
+  truncateString,
+} from './reportHelpers';
 
 /**
  * Emit an `ONBOARDING_MILESTONE` event with a dedup-counter suffix.
@@ -51,7 +56,9 @@ function reportOnboardingMilestone(name: string): void {
      * the same bytes, defeating the dedup signal.
      */
     const suffix = ` (#${String(next)})`;
-    const base = truncated.slice(0, Math.max(0, MAX_STRING_LENGTH - suffix.length));
+    const base = dropDanglingSurrogate(
+      truncated.slice(0, Math.max(0, MAX_STRING_LENGTH - suffix.length)),
+    );
     runtime.dispatcher.addEventString({
       eventId: KEvents.ONBOARDING_MILESTONE,
       str: `${base}${suffix}`,

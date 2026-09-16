@@ -9,12 +9,20 @@
  */
 
 export type { AdTypeValue } from './adType';
+export type {
+  CustomEventIdArgs,
+  CustomEventIdCollision,
+  CustomEventIdEntry,
+} from './types/customEventId';
 export type { CustomEventTypeValue } from './customEventType';
 export type { Item, ItemArgs } from './item';
 export type { KBatchDropReasonValue } from './batchDropReason';
 export type { KEvent } from './kevents';
+export { APP_VERSION_UNSPECIFIED, appVersionPayload } from './appVersion';
 export { AdType } from './adType';
-export { CustomEventType } from './customEventType';
+export { CUSTOM_EVENT_BASE, CUSTOM_EVENT_DATA_TYPE_NAME, CustomEventType } from './customEventType';
+export { customEventIdAt, findCustomEventIdCollision } from './customEventId';
+export { CUSTOM_EVENT_MIN_ID, isCustomEventId } from './customEventType';
 export { item } from './item';
 export { KBatchDropReason } from './batchDropReason';
 export { KEvents } from './kevents';

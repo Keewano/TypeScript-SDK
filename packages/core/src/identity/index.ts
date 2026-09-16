@@ -4,6 +4,8 @@
  * - `loadOrInitIdentifiers` / `persistIdentifiers` - the persistent
  *   `installId` + `userId` record, generated on first launch and
  *   kept across app restarts.
+ * - `isAllZeroUuid` - shared all-zero UUID predicate (the `userId`
+ *   "not set" sentinel / `installId` corruption signal).
  * - `isPreSdkRegistered` / `markPreSdkRegistered` - one-shot marker
  *   indicating that the pre-SDK registration date event has already
  *   been reported for this user.
@@ -30,6 +32,6 @@ export {
   TEST_USER_FILENAME,
   TEST_USER_MAX_LENGTH,
 } from './helpers/constants';
-export { loadOrInitIdentifiers, persistIdentifiers } from './identifiers';
+export { isAllZeroUuid, loadOrInitIdentifiers, persistIdentifiers } from './identifiers';
 export { isPreSdkRegistered, markPreSdkRegistered } from './preSdkMarker';
 export { clearTestUserName, loadTestUserName, persistTestUserName } from './testUser';

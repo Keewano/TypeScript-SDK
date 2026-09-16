@@ -10,15 +10,9 @@
 import type { PlatformAdapter } from './types/platformAdapter';
 import type { RnModule, RnPlatformLike } from './types/platformDefaults';
 
-import { clampUint32 } from '@keewano/core';
+import { APP_VERSION_UNSPECIFIED, clampUint32 } from '@keewano/core';
 
-/**
- * `require` is provided by the React Native / Node runtime but is
- * not part of the SDK's TypeScript lib set. Declared locally so
- * the per-package tsc and editors do not need `@types/node`
- * pulled in - mirrors the same local declaration in
- * `storage/helpers/loadNativeModules.ts`.
- */
+// Declared locally so the per-package tsc does not need @types/node (mirrors loadNativeModules.ts).
 declare const require: (id: string) => unknown;
 
 /** Sentinel returned when a platform field cannot be resolved. */
@@ -38,14 +32,8 @@ const UNKNOWN = 'unknown';
 function tryRequireRn(): RnModule | null {
   try {
     const mod = require('react-native') as RnModule & { default?: RnModule };
-    /**
-     * CommonJS / ESM interop builds can expose the React Native API
-     * BOTH on the top-level module and on `mod.default`. Aggressively
-     * unwrapping `default` whenever it exists can throw away the real
-     * top-level fields (Platform / Dimensions / NativeModules). Prefer
-     * the top-level shape when it already looks like an RN module
-     * and fall back to `default` only for the pure ESM-wrapped case.
-     */
+    // Interop builds expose the API on both the top level and mod.default; prefer the top-level
+    // shape when it already looks like RN, else unwrapping default would drop the real fields.
     if (
       mod.Platform !== undefined ||
       mod.Dimensions !== undefined ||
@@ -63,20 +51,12 @@ function tryRequireRn(): RnModule | null {
 }
 
 /**
- * Read the full-screen dimensions from a React Native module, falling
- * back to `undefined` when the lookup throws. `Dimensions.get()` can
- * throw on SSR, partially-mocked test environments, or broken shims
- * that wire up the property but make `get` itself raise. The outer
- * `?.` chain catches missing keys but not a throw from `get` itself,
- * so a defensive wrap is needed to match the documented
- * safe-fallback contract.
- *
- * Reads the `'screen'` metrics (the whole display) rather than
- * `'window'` (the app's drawable area, which excludes the Android
- * status / navigation bars) to mirror Unity's `Screen.currentResolution`.
- * The `scale` (device pixel ratio) is returned alongside so the caller
- * can convert RN's density-independent points to the physical pixels
- * the wire protocol expects.
+ * Full-screen dimensions, or `undefined` when the lookup throws
+ * (`Dimensions.get()` can raise on SSR / mocks; the `?.` chain does
+ * not catch a throw). Reads `'screen'` (whole display), not `'window'`
+ * (excludes Android status/nav bars), to mirror the wire's expected
+ * resolution; `scale` is returned so the caller can convert
+ * density-independent points to the physical pixels the wire expects.
  */
 function tryGetScreenDimensions(
   rn: RnModule | null,
@@ -87,39 +67,23 @@ function tryGetScreenDimensions(
   } catch {
     return undefined;
   }
-  /**
-   * Validate the shape too. The outer try only catches throws; a
-   * broken shim that returns `null`, a primitive, or an object
-   * without numeric `width` / `height` would otherwise pass through
-   * and crash the caller's `dims.width` deref. Falling back to
-   * `undefined` matches the documented safe-default contract -
-   * downstream `clampUint32(undefined)` then produces a 0.
-   */
+  // Validate shape: a shim returning null/primitive/missing-numeric fields must fall back rather
+  // than crash the caller's dims.width deref.
   if (dims === null || typeof dims !== 'object') return undefined;
   const candidate = dims as { width?: unknown; height?: unknown; scale?: unknown };
   if (typeof candidate.width !== 'number' || typeof candidate.height !== 'number') {
     return undefined;
   }
-  /**
-   * `scale` is the device pixel ratio. Default to 1 when a shim omits
-   * it (or reports a non-positive value) so the points pass through
-   * unscaled instead of collapsing the resolution to 0.
-   */
+  // Default scale to 1 when omitted/non-positive so points pass through unscaled, not collapsed to 0.
   const scale = typeof candidate.scale === 'number' && candidate.scale > 0 ? candidate.scale : 1;
   return { width: candidate.width, height: candidate.height, scale };
 }
 
 /**
- * Resolve the OS identifier from the host's React Native module.
- * Prefers the top-level `Platform.OS` and falls back to the nested
- * `Platform.constants.systemName` (some RN hosts expose only the
- * latter). BOTH sources are lowercased so a host that writes
- * `'iOS'` / `'Android'` into `Platform.OS` (non-canonical but
- * possible) does not get misclassified as `'unknown'` downstream by
- * `detectDeviceType` / `detectLanguage`, which check `=== 'ios'` /
- * `=== 'android'`. Returns `undefined` when neither source is
- * available so callers can decide whether `'unknown'` is the right
- * sentinel for their field.
+ * OS identifier from `Platform.OS`, falling back to the nested
+ * `Platform.constants.systemName`. Lowercased so a host writing
+ * `'iOS'`/`'Android'` is not misclassified downstream (callers check
+ * `=== 'ios'`/`'android'`). `undefined` when neither source exists.
  */
 function resolveOs(platform: RnPlatformLike | undefined): string | undefined {
   if (platform === undefined) return undefined;
@@ -130,13 +94,8 @@ function resolveOs(platform: RnPlatformLike | undefined): string | undefined {
 }
 
 /**
- * Classify the host device into one of `'tv'` / `'tablet'` / `'phone'`
- * / `'desktop'` / `'unknown'`. The check order matters: `isTV` wins
- * over `isPad` so an Apple TV reports `'tv'` even when the underlying
- * iOS API would otherwise mark it as iPad-class. OS detection goes
- * through {@link resolveOs} so a host that exposes only the nested
- * `Platform.constants.systemName` still gets the right device class
- * (matching the `os` field on the resulting adapter).
+ * Classify device into tv/tablet/phone/desktop/unknown. Order matters:
+ * `isTV` wins over `isPad` so an Apple TV reports 'tv', not iPad-class.
  */
 function detectDeviceType(rn: RnModule | null): string {
   const platform = rn?.Platform;
@@ -150,32 +109,17 @@ function detectDeviceType(rn: RnModule | null): string {
 }
 
 /**
- * Resolve the user's preferred locale. iOS exposes the locale through
- * `SettingsManager.settings.AppleLocale` (or `AppleLanguages[0]` when
- * the locale field is absent); Android exposes it through
- * `I18nManager.localeIdentifier`. Falls back to {@link UNKNOWN} when
- * none of the sources are present.
- *
- * Gated by {@link resolveOs} so a hybrid module (both `SettingsManager`
- * and `I18nManager` exposed - some custom RN forks, partially-stubbed
- * test envs) reads the locale from the source that matches the actual
- * platform, not the first source the lookup finds. When the OS is
- * unknown, falls back to the unordered scan (Apple sources first, then
- * I18nManager) so legacy hosts that do not expose `Platform.OS` still
- * get a non-`UNKNOWN` value.
+ * Preferred locale: iOS via `SettingsManager.settings.AppleLocale`
+ * (or `AppleLanguages[0]`), Android via `I18nManager.localeIdentifier`,
+ * else {@link UNKNOWN}. Gated by {@link resolveOs} so a hybrid module
+ * reads the source matching the actual platform; when the OS is unknown
+ * it scans Apple-then-Android so legacy hosts still resolve a value.
  */
 function detectLanguage(rn: RnModule | null): string {
   const nm = rn?.NativeModules;
   if (nm === undefined) return UNKNOWN;
-  /**
-   * Wrap the OS branch in try / catch matching the Dimensions.get
-   * guard. Native modules expose JS getters that can throw on
-   * partial mocks, lazy-init failures, or custom shims; without
-   * the wrap, an exception in `SettingsManager.settings` /
-   * `I18nManager.localeIdentifier` (or in `resolveOs` reading
-   * Platform fields) would crash `init()` instead of falling back
-   * to UNKNOWN.
-   */
+  // NativeModules getters can throw (partial mocks, lazy-init); without the wrap that would
+  // crash init() instead of falling back to UNKNOWN.
   try {
     const os = resolveOs(rn?.Platform);
     if (os === 'ios') return readAppleLocale(nm) ?? UNKNOWN;
@@ -232,47 +176,25 @@ function defaultPlatformAdapter(): PlatformAdapter {
   const rn = tryRequireRn();
   const platform = rn?.Platform;
   const dims = tryGetScreenDimensions(rn);
-  /**
-   * OS + version source order: top-level `Platform.OS` / `Platform.Version`
-   * win when present; fall back to the nested `Platform.constants`
-   * bag for hosts that only expose values there.
-   */
   const os = resolveOs(platform) ?? UNKNOWN;
   const osVersionSource = platform?.Version ?? platform?.constants?.osVersion;
   return {
     os,
     osVersion: stringifyVersion(osVersionSource),
     deviceType: detectDeviceType(rn),
-    /**
-     * RN does not expose total RAM via JS; the field stays 0 until a
-     * host plugin (e.g. expo-device) provides it via DI. Unit is
-     * megabytes - the wire payload for RAM_SIZE is a uint32 count of
-     * MB, not bytes.
-     */
+    // Stays 0 until a host plugin provides it: RN exposes no total RAM via JS. Unit is MB (the
+    // RAM_SIZE wire payload is a uint32 MB count, not bytes).
     ramSizeMb: 0,
-    /**
-     * Report PHYSICAL pixels to match Unity's `Screen.currentResolution`:
-     * RN's `Dimensions` are density-independent points, so multiply by
-     * the device pixel ratio (`scale`). The points are kept at full
-     * float precision until this multiply, so e.g. 411.43 dp x 2.625 =
-     * 1080 px exactly rather than rounding the points to 411 first.
-     *
-     * `Dimensions.get()` from a misbehaving shim can return `undefined`
-     * fields or non-numeric values. Clamp at the source so NaN /
-     * Infinity / negative width or height cannot leak into the public
-     * `PlatformInfo` snapshot - the `initialEvents` writer would still
-     * catch it via `clampUint16`, but the raw field is also read by
-     * host code that inspects `info` directly for debug.
-     */
+    // Physical pixels: RN Dimensions are density-independent points, so multiply by scale, keeping
+    // full float precision until the multiply (411.43 dp x 2.625 = 1080 px exactly). Clamp at the
+    // source so NaN/Infinity/negative from a bad shim cannot leak into the public snapshot.
     screenWidth: dims === undefined ? 0 : clampUint32(dims.width * dims.scale),
     screenHeight: dims === undefined ? 0 : clampUint32(dims.height * dims.scale),
     systemLanguage: detectLanguage(rn),
-    /**
-     * App version is sourced from the host bundle; tests / hosts
-     * without expo-application pass it explicitly through
-     * `Keewano.init({ platform })`.
-     */
-    appVersion: UNKNOWN,
+    // Sourced from the host bundle; injected via Keewano.init({ platform }) when unavailable.
+    // Unset reads as the agreed literal rather than 'unknown', so a version-less
+    // session is one the backend can tell apart from a real version cohort.
+    appVersion: APP_VERSION_UNSPECIFIED,
   };
 }
 

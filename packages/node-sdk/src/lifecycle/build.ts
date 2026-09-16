@@ -48,6 +48,7 @@ function buildDispatcher({
 function buildRuntime({
   config,
   endpoint,
+  shutdownGraceMs,
   storage,
   dispatcher,
   installId,
@@ -57,6 +58,7 @@ function buildRuntime({
   return {
     config,
     endpoint,
+    shutdownGraceMs,
     storage,
     dispatcher,
     installId,

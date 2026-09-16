@@ -11,47 +11,53 @@
 
 import type { EmitInitialEventsArgs } from './types/initialEvents';
 
-import { KEvents, clampUint16, clampUint32 } from '@keewano/core';
+import {
+  KEvents,
+  appVersionPayload,
+  clampUint16,
+  clampUint32,
+  truncateString,
+} from '@keewano/core';
 
 /**
  * Emit the init-burst events into the dispatcher in canonical order.
  * The call is synchronous; events land in the dispatcher's in-batch
  * and ride out on the next swap.
+ *
+ * Every string is capped the same way a report method caps its label.
+ * These fields are host-supplied through `Keewano.init({ platform })`
+ * - a build stamp carrying a branch and a commit, a device model read
+ * from a native module - so the burst is otherwise the one path on
+ * which an unbounded string reaches the wire.
  */
 function emitInitialEvents({ dispatcher, platform }: EmitInitialEventsArgs): void {
-  /** APP_LAUNCH carries the host app version string. */
-  dispatcher.addEventString({ eventId: KEvents.APP_LAUNCH, str: platform.appVersion });
   /**
-   * PLATFORM mirrors `Platform.OS` ('ios' / 'android' / 'web'). This
-   * is the canonical platform alphabet for the RN SDK: it is the only
-   * platform token a pure-JS host can read without a native module, so
-   * the wire value intentionally carries the RN identifier rather than
-   * any other runtime's platform naming. Cross-SDK dashboards reconcile
-   * platforms server-side, not on the client.
+   * APP_LAUNCH goes out whether or not the host could name its build.
+   * The adapter type asks for a version, and the defaults supply one,
+   * but a JavaScript host can still hand over an object without it -
+   * an unset environment variable reaching this far used to throw
+   * inside the burst and fail the whole init, taking every other event
+   * with it. A session with no version is worth more than no session.
    */
-  dispatcher.addEventString({ eventId: KEvents.PLATFORM, str: platform.os });
-  /**
-   * DEVICE_TYPE is a coarse device class ('phone' / 'tablet' / 'tv' /
-   * 'desktop' / 'unknown') - emitted BEFORE OS. Pure-JS React Native
-   * exposes no concrete device-model string, so the SDK intentionally
-   * reports the device CLASS it can derive from `Platform.isTV` /
-   * `isPad` / OS. A host that needs the exact model injects it via
-   * `Keewano.init({ platform })`.
-   */
-  dispatcher.addEventString({ eventId: KEvents.DEVICE_TYPE, str: platform.deviceType });
-  /**
-   * OS carries the OS-version string (`Platform.Version` on RN hosts).
-   * This is the bare version literal RN surfaces ('17.2' on iOS, the
-   * API level on Android); a composed name+version descriptor would
-   * require a native module, so the RN SDK intentionally ships the raw
-   * platform value and lets the server attach the OS name from PLATFORM.
-   */
-  dispatcher.addEventString({ eventId: KEvents.OS, str: platform.osVersion });
-  /**
-   * RAM_SIZE wire payload is megabytes (uint32), not bytes. The
-   * PlatformAdapter contract names the field `ramSizeMb` to enforce
-   * the unit at the type level.
-   */
+  dispatcher.addEventString({
+    eventId: KEvents.APP_LAUNCH,
+    str: truncateString(appVersionPayload(platform.appVersion)),
+  });
+  // PLATFORM intentionally carries the RN `Platform.OS` token ('ios' /
+  // 'android' / 'web'); cross-SDK platform naming is reconciled server-side.
+  dispatcher.addEventString({ eventId: KEvents.PLATFORM, str: truncateString(platform.os) });
+  // DEVICE_TYPE is a coarse device class ('phone' / 'tablet' / 'tv' /
+  // 'desktop' / 'unknown'): pure-JS RN exposes no device-model string, so a
+  // host that needs the exact model injects it via `Keewano.init({ platform })`.
+  dispatcher.addEventString({
+    eventId: KEvents.DEVICE_TYPE,
+    str: truncateString(platform.deviceType),
+  });
+  // OS carries the bare `Platform.Version` literal ('17.2' on iOS, the API
+  // level on Android); the server attaches the OS name from PLATFORM.
+  dispatcher.addEventString({ eventId: KEvents.OS, str: truncateString(platform.osVersion) });
+  // RAM_SIZE wire payload is megabytes (uint32), not bytes; `ramSizeMb`
+  // enforces the unit at the type level.
   dispatcher.addEventUint32({
     eventId: KEvents.RAM_SIZE,
     value: clampUint32(platform.ramSizeMb),
@@ -78,7 +84,10 @@ function emitInitialEvents({ dispatcher, platform }: EmitInitialEventsArgs): voi
    * pure JS, and BCP-47 is the lossless superset, so the server maps
    * other runtimes onto this alphabet rather than the reverse.
    */
-  dispatcher.addEventString({ eventId: KEvents.SYSTEM_LANG, str: platform.systemLanguage });
+  dispatcher.addEventString({
+    eventId: KEvents.SYSTEM_LANG,
+    str: truncateString(platform.systemLanguage),
+  });
 }
 
 export type { EmitInitialEventsArgs } from './types/initialEvents';

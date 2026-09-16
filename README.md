@@ -1,8 +1,7 @@
 # Keewano TypeScript SDK
 
-Behavioural analytics for Keewano AI Analyst, built on a platform-agnostic core. Today it
-ships the React Native and Expo SDKs; the same core is built to be reused by future
-platform SDKs such as Node.js or Web.
+Behavioural analytics for Keewano AI Analyst, built on a platform-agnostic core. It ships
+the React Native, Expo, Node.js, and browser SDKs, all built on that same core.
 
 ## Documentation
 
@@ -14,6 +13,11 @@ Full documentation: [`docs/`](docs/README.md)
 - [Configuration](docs/configuration.md) - every `init` option and lifecycle helpers
 - [Automatic Tracking](docs/automatic-tracking.md) - what is captured with no extra code
 - [Event Types](docs/event-types.md) - the full map of events
+
+**Browser and server**
+
+- [Browser (Web SDK)](docs/web.md) - install, initialise, and run the SDK on a website
+- [Node.js (Server Relay)](docs/nodejs.md) - report from a backend for many users
 
 **Reporting events**
 
@@ -30,15 +34,16 @@ Full documentation: [`docs/`](docs/README.md)
 
 **Data and operations**
 
-- [Data Privacy](docs/privacy.md) - the consent gate and what is stored on device
+- [Data Privacy](docs/privacy.md) - the consent gate and what is stored locally
 - [Offline Analytics](docs/offline.md) - no-loss offline behaviour
-- [Data Format](docs/data-format.md) - the binary wire format
+- [Data Format](docs/data-format.md) - the wire format
 
 **Integration**
 
 - [Example Integration](docs/example-integration.md) - a step-by-step walkthrough
 - [Integration Testing](docs/integration-testing.md) - verify it works
 - [Existing App Integration](docs/existing-app-integration.md) - add it to a shipped game
+  (React Native and Expo)
 
 **Packages and contributing**
 

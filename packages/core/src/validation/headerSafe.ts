@@ -40,7 +40,7 @@ function hasControlChar(value: string): boolean {
 /**
  * `true` when every character of `value` fits in a single byte
  * (0x00-0xFF), i.e. the whole string is a valid ByteString. Multi-byte
- * Unicode (Cyrillic, emoji) fails.
+ * Unicode (Cyrillic and beyond) fails.
  */
 function isByteString(value: string): boolean {
   for (const ch of value) {

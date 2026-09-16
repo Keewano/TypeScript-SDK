@@ -22,13 +22,24 @@ code and no React dependency.
 
 ## 2. Initialise
 
-Call `init` once when your process starts. `apiKey` is the only required option.
+Call `init` once when your process starts. It needs two things: your `apiKey`, and
+where to keep batches on disk - either a `dataDir` for the built-in storage or your
+own `storage` adapter.
 
 ```typescript
 import { Keewano } from '@keewano/node-sdk';
 
-await Keewano.init({ apiKey: 'your-project-api-key' });
+await Keewano.init({
+  apiKey: 'your-project-api-key',
+  dataDir: '/var/lib/my-service/keewano',
+});
 ```
+
+There is deliberately no default directory. A queue holds batches addressed to one
+project, and each batch carries its own end user, so a process that finds a neighbour's
+file ships that neighbour's users into its own project. Point `dataDir` at a private,
+persistent location: the same one across restarts, a different one per service and per
+replica.
 
 Unlike the device SDKs, `init` does nothing on its own - no environment burst, no
 background listeners. It only prepares the send loop. Every event is supplied later, per
@@ -40,11 +51,12 @@ user, through `reportUserBatch`.
 | ----------------- | --------------------------------------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `apiKey`          | `string`                                      | (required)              | Your project key, sent as the `K-Token` header.                                                                                                                                                                     |
 | `endpoint`        | `string`                                      | production URL          | Override the ingress URL. Useful for staging or self-host.                                                                                                                                                          |
-| `dataDir`         | `string`                                      | `<os.tmpdir()>/keewano` | Directory the default storage uses for on-disk batches. Ignored when `storage` is supplied.                                                                                                                         |
+| `dataDir`         | `string`                                      | (required)              | Directory the default storage uses for on-disk batches. Required unless you supply `storage`, and ignored when you do. Must be private to this process - see [One `dataDir` = one process](#one-datadir--one-process). |
 | `storage`         | `StorageAdapter`                              | `NodeStorageAdapter`    | Custom storage backend; replaces the file-system default.                                                                                                                                                           |
 | `installId`       | `string`                                      | project id              | Override the relay install id (a 36-char hyphenated UUID). Defaults to the project id from the API key, which the backend requires to be non-zero.                                                                  |
 | `getExtraHeaders` | `() => Record<string,string> \| Promise<...>` | none                    | Extra HTTP headers on every request (for example an auth token for a proxy in front of staging). Resolved once per send cycle, so a short-lived token can refresh. Reserved `K-*` / `Content-*` headers always win. |
 | `customEventSet`  | `CustomEventSet`                              | none                    | Your generated custom-events schema. See [Custom Events](custom-events.md).                                                                                                                                         |
+| `shutdownGraceMs` | `number`                                      | `3000`                  | How long `shutdown` may spend shipping what is still queued. `0` skips that entirely and leaves the queue for the next run.                                                                                          |
 
 > [!NOTE]
 > The Node SDK has no consent gate and no opt-out flags. Those belong to the device SDKs,
@@ -137,7 +149,9 @@ out at every call site. Write one thin helper module and call one-liners everywh
 
 ```typescript
 // analytics.ts - written once
-import { Keewano, UserReporter } from '@keewano/node-sdk';
+import type { UserReporter } from '@keewano/node-sdk';
+
+import { Keewano } from '@keewano/node-sdk';
 
 export const track = (userId: string | bigint, emit: (user: UserReporter) => void) =>
   Keewano.reportUserBatch({ userId, build: emit });
@@ -198,10 +212,14 @@ behaves exactly as it does on the device SDKs - follow the linked guide and read
 
 ## 5. Custom events
 
-Generate a typed schema with `@keewano/codegen`, targeting the Node relay:
+Create a `keewano-custom-events/` directory next to your source, then generate a typed
+schema with `@keewano/codegen`, targeting the Node relay. The generator reads that
+directory and never creates it:
 
 ```bash
-npx keewano-codegen --input keewano-custom-events --target node
+mkdir keewano-custom-events
+npx keewano-codegen add BestScore --type uint
+npx keewano-codegen --target node
 ```
 
 Pass the generated `customEventSet` to `init` (the send loop registers it once per session,
@@ -212,7 +230,7 @@ before the first batch ships), then emit through the generated wrappers - or
 import { Keewano } from '@keewano/node-sdk';
 import { customEventSet, reportBestScore } from './keewano-custom-events/keewano-events.generated';
 
-await Keewano.init({ apiKey: '...', customEventSet });
+await Keewano.init({ apiKey: '...', dataDir: '/var/lib/my-service/keewano', customEventSet });
 await Keewano.reportUserBatch({
   userId,
   build: (user) => reportBestScore(user, 12345),
@@ -266,12 +284,26 @@ exit, call `shutdown` to stop the send loop and release resources:
 await Keewano.shutdown();
 ```
 
-There is nothing buffered to lose: each batch is already on disk by the time
-`reportUserBatch` resolves, and anything not yet shipped is picked up by the next run.
+Nothing is buffered in memory: each batch is already on disk by the time
+`reportUserBatch` resolves. What is on disk and not yet shipped gets one bounded chance
+to leave before the loop stops - `shutdown` waits up to `shutdownGraceMs` (3 seconds by
+default) for the queue to drain, and gives up early if a pass makes no progress, so an
+unreachable endpoint never stalls your exit. This matters most for a script or a job
+that reports and exits immediately: a long-lived server has a loop that would have
+shipped the batch anyway, but a one-shot process has no next run to sweep it.
 
-`Keewano.isReady()` returns `true` once `init` has resolved. Calling `reportUserBatch`
-before that throws ("SDK not initialized"), so `await` your `init` call during process
-startup before reporting.
+Whatever the grace does not cover stays on disk for the next run of the same `dataDir`.
+Set `shutdownGraceMs: 0` to skip the drain and exit at once.
+
+`Keewano.isReady()` returns `true` once `init` has installed the runtime. Calling
+`reportUserBatch` before that throws ("SDK not initialized"), so `await` your `init` call
+during process startup before reporting.
+
+Awaiting `init` is not on its own proof that the SDK started: it returns without starting
+the send loop when the `apiKey` is missing, empty, whitespace-only, or malformed
+(surrounding whitespace, control characters, or characters outside the ByteString range,
+any of which would fail the transport's header check on every attempt). Each of those
+logs the reason, and `isReady()` stays `false` - check it if a caller needs to know.
 
 ## How it differs from the device SDKs
 

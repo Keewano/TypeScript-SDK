@@ -5,6 +5,14 @@
 Adding Keewano to a game that already has players is the same install as a new app,
 plus two things that help the backend make sense of your existing user base.
 
+> [!NOTE]
+> This guide is written for the React Native and Expo SDKs.
+> `reportUserRegisteredBeforeSDKIntegration` exists only on those two, so the
+> back-fill below does not apply to the browser SDK or the Node.js relay. Linking an
+> existing account id does apply on the web, where `setUserId` works the same way -
+> see [Browser (Web SDK)](web.md). The Node.js relay attributes every batch to a user
+> id you pass in, so it needs neither step - see [Node.js](nodejs.md).
+
 ## Back-fill the registration date
 
 New installs are dated from their first launch. For players who registered *before*

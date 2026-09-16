@@ -11,19 +11,14 @@ import type { CustomEventTypeValue } from '../events';
 import type { KEventDispatcher } from '../dispatcher';
 import type { ReportCustomEventArgs } from './types/customEvents';
 
-import { CustomEventType } from '../events';
+import { CustomEventType, customEventIdAt, isCustomEventId } from '../events';
 import { runWhenReady, truncateString } from './reportHelpers';
-
-/** First wire id assigned to custom events; the Nth declared event is 2500 + N. */
-const CUSTOM_EVENT_BASE = 2500;
 
 /**
  * Emit one custom event onto the dispatcher using the overload that
- * matches its declared payload type. A value whose runtime type does
- * not match the declaration surfaces as the dispatcher's own
- * TypeError / RangeError - the typed codegen wrappers prevent that at
- * compile time, so a mismatch only reaches here from an untyped (raw)
- * call, which is the host's risk to take.
+ * matches its declared payload type. A value that does not match the
+ * declaration reaches the dispatcher, which refuses it; the caller
+ * turns that refusal into a dropped event rather than a throw.
  */
 function emitByType(
   dispatcher: KEventDispatcher,
@@ -87,7 +82,33 @@ function reportCustomEvent({ name, value }: ReportCustomEventArgs): void {
     }
     const def = events[index];
     if (def === undefined) return;
-    emitByType(runtime.dispatcher, CUSTOM_EVENT_BASE + index, def.type, value);
+    const eventId = customEventIdAt({ declaredId: def.id, index });
+    /**
+     * An id below the custom range is a built-in event's number, and
+     * nothing downstream can tell the difference once the event is on
+     * the wire - the payload would simply arrive as that built-in.
+     */
+    if (!isCustomEventId(eventId)) {
+      console.error(
+        `reportCustomEvent: "${name}" declares id ${String(eventId)}, which is not a custom event id; event dropped.`,
+      );
+      return;
+    }
+    /**
+     * Which payload shape is correct depends on the declaration, which
+     * is runtime data, so `value` is typed as the union of all of them
+     * and a call that compiles can still be wrong. This runs
+     * synchronously inside whatever called it - a purchase handler, a
+     * render - and every dispatcher overload validates before it writes
+     * anything, so catching the refusal drops the one event and leaves
+     * the batch exactly as it was. An analytics call is not worth a
+     * crash.
+     */
+    try {
+      emitByType(runtime.dispatcher, eventId, def.type, value);
+    } catch (error: unknown) {
+      console.error(`reportCustomEvent: "${name}" payload refused; event dropped.`, error);
+    }
   });
 }
 

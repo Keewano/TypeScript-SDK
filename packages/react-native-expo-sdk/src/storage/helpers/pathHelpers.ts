@@ -11,6 +11,8 @@ import type {
   ResolveUnderRootArgs,
 } from '../types/pathHelpers';
 
+import { StorageUnavailableError } from './errors';
+
 import { normalizeRelativePath } from '@keewano/core';
 
 /**
@@ -51,7 +53,7 @@ function computeRootDir({ explicit, documentDirectory }: ComputeRootDirArgs): st
    * an invalid URI like `undefinedkeewano/` or `file:///docskeewano/`.
    */
   if (documentDirectory == null || documentDirectory.length === 0) {
-    throw new Error('ExpoStorageAdapter: documentDirectory unavailable');
+    throw new StorageUnavailableError('ExpoStorageAdapter: documentDirectory unavailable');
   }
   /**
    * Apply the same shape constraints that an explicit `rootDir` gets:
@@ -63,6 +65,12 @@ function computeRootDir({ explicit, documentDirectory }: ComputeRootDirArgs): st
     documentDirectory.includes('?') ||
     documentDirectory.includes('#')
   ) {
+    /**
+     * Deliberately NOT StorageUnavailableError: a malformed
+     * documentDirectory is a broken native setup, not a known
+     * storage-less platform - it must fail loudly instead of
+     * silently degrading persistence to memory.
+     */
     throw new Error(
       'ExpoStorageAdapter: documentDirectory must be a local file:/// URI without query/fragment',
     );

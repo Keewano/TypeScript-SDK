@@ -28,11 +28,13 @@ export {
   normalizeRelativePath,
   validPath,
 } from './helpers/path';
+export type { ParsedScratchSibling, ScratchKind } from './types/scratchSiblings';
 export {
   SCRATCH_BAK_INFIX,
   SCRATCH_DEL_INFIX,
   SCRATCH_SIBLING_PATTERN,
   SCRATCH_TMP_INFIX,
   isScratchSibling,
+  parseScratchSibling,
 } from './helpers/scratchSiblings';
 export { MemoryStorageAdapter } from './adapter';

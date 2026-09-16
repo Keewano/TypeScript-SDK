@@ -31,9 +31,10 @@ import { IDS_FILE_SIZE, IDS_FILENAME } from './helpers/constants';
 const UUID_SIZE = 16;
 
 /**
- * `true` when every byte in `bytes` is zero. Applied only to
- * `installId` (the corruption signal) and never to `userId` (where
- * all-zero is a legitimate "not set" sentinel).
+ * `true` when every byte in `bytes` is zero. On this wire protocol
+ * the all-zero UUID is the "not set" sentinel for `userId` and the
+ * corruption signal for `installId`; identity code on every platform
+ * shares this predicate instead of growing per-package copies.
  */
 function isAllZeroUuid(bytes: Uint8Array): boolean {
   return bytes.every((b) => b === 0);
@@ -218,4 +219,4 @@ async function persistIdentifiers(args: PersistIdentifiersArgs): Promise<void> {
   });
 }
 
-export { loadOrInitIdentifiers, persistIdentifiers };
+export { isAllZeroUuid, loadOrInitIdentifiers, persistIdentifiers };

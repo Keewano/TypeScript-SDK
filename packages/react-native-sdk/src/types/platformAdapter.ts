@@ -17,7 +17,9 @@
  * screenWidth - Pixel width as uint16.
  * screenHeight - Pixel height as uint16.
  * systemLanguage - Two-letter language code (`'en'`, `'uk'`, ...).
- * appVersion - Host app's release version string.
+ * appVersion - Host app's release version string. Optional: APP_LAUNCH
+ *   opens the session for the backend and is emitted whether or not the
+ *   host can name its build, carrying "undefined" when it cannot.
  */
 interface PlatformAdapter {
   os: string;
@@ -27,7 +29,7 @@ interface PlatformAdapter {
   screenWidth: number;
   screenHeight: number;
   systemLanguage: string;
-  appVersion: string;
+  appVersion?: string;
 }
 
 export type { PlatformAdapter };

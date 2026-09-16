@@ -1,6 +1,6 @@
 {
   "name": "@keewano/react-native-sdk",
-  "version": "1.0.0-41",
+  "version": "1.1.0-179",
   "description": "Bare React Native SDK for Keewano AI Analyst.",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -21,10 +21,12 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "build:prod": "tsc -p tsconfig.prod.json",
-    "clean": "rimraf dist"
+    "clean": "rimraf dist",
+    "prepack": "node ../../scripts/syncSiblingRanges.cjs --apply",
+    "postpack": "node ../../scripts/syncSiblingRanges.cjs --restore"
   },
   "dependencies": {
-    "@keewano/core": "*"
+    "@keewano/core": "^1.1.0-179"
   },
   "peerDependencies": {
     "react": ">=18.0.0",
@@ -47,5 +49,10 @@
   "license": "MIT",
   "devDependencies": {
     "@types/react": "^18.3.31"
+  },
+  "peerDependenciesMeta": {
+    "react-native-fs": {
+      "optional": true
+    }
   }
 }

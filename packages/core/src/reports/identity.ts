@@ -28,6 +28,7 @@ import {
   isInitializing,
 } from '../runtime';
 import { hasControlChar, isByteString } from '../validation';
+import { nowUnixSec, runWhenReadyAsync } from './reportHelpers';
 
 /**
  * Return the persisted install UUID. Awaits the in-flight init
@@ -67,7 +68,26 @@ async function getInstallId(): Promise<string> {
  *   "no user" sentinel the install starts with.
  */
 function setUserId(userId: string | bigint): void {
-  const bytes = typeof userId === 'bigint' ? bigintToUuidBytes(userId) : uuidToBytes(userId);
+  /**
+   * Rethrown under this function's own name: the helpers below report
+   * themselves, and a caller who has only ever seen `Keewano.setUserId`
+   * cannot act on the name of an internal one. The KIND of error is
+   * kept - a range problem stays a RangeError - because that is the
+   * part a caller can branch on.
+   */
+  let bytes: Uint8Array;
+  try {
+    bytes = typeof userId === 'bigint' ? bigintToUuidBytes(userId) : uuidToBytes(userId);
+  } catch (error: unknown) {
+    if (error instanceof RangeError) {
+      throw new RangeError(
+        'Keewano.setUserId: a bigint userId must fit in uint64 and not be negative.',
+      );
+    }
+    throw new TypeError(
+      'Keewano.setUserId: a string userId must be a 36-character hyphenated UUID.',
+    );
+  }
   /**
    * Reject the all-zero UUID. It is the "user not set" sentinel the
    * install starts with, so assigning it would silently demote a real
@@ -80,6 +100,13 @@ function setUserId(userId: string | bigint): void {
   }
   const op = (): void => {
     const runtime = getRuntime();
+    /**
+     * Before the assignment and the disk write, not after: the
+     * dispatcher refuses the event on its own, but the identifier
+     * would still reach `Keewano_Ids` and come back as the batch
+     * userId on the next launch - the id of the person who refused.
+     */
+    if (!runtime.dispatcher.collecting) return;
     runtime.dispatcher.setUserId(bytes);
     runtime.userId = bytes;
     persistIdentifiers({
@@ -159,6 +186,8 @@ function markAsTestUser(name: string): void {
   }
   const op = (): void => {
     const runtime = getRuntime();
+    /** Same reason as setUserId: the marker outlives the session on disk. */
+    if (!runtime.dispatcher.collecting) return;
     runtime.dispatcher.markAsTestUser(name);
     persistTestUserName({ storage: runtime.storage, testUserName: name }).catch((err: unknown) => {
       console.error('Keewano.markAsTestUser: persistence failed.', err);
@@ -210,43 +239,51 @@ async function reportUserRegisteredBeforeSDKIntegration(date: Date): Promise<voi
   if (!Number.isFinite(timestampMs) || timestampMs < 0 || timestampMs > Date.now()) {
     return;
   }
-  const pending = getInitPromise();
-  if (pending !== null) await pending;
-  const runtime = getRuntime();
   /**
-   * Serialize concurrent callers via an in-flight Promise on the
-   * runtime. Without this latch, two parallel calls both observe
-   * `isPreSdkRegistered === false` (the check happens before
-   * either has had a chance to mark) and both emit the event,
-   * burning the one-shot slot with a duplicate. The second caller
-   * now awaits the first's check/mark/emit sequence, then
-   * re-checks `isPreSdkRegistered()` (which is now `true`) and
-   * silently no-ops. The latch lives on the runtime so
-   * `shutdown()` clears it - module-scope storage would survive
-   * shutdown + re-init and corrupt the one-shot contract across
-   * sessions.
+   * Sample the caller's wall clock now and re-apply it right before
+   * the emit: the latch and the marker write below await storage,
+   * and a concurrent report can re-stamp the dispatcher frame inside
+   * that gap - the event header must still carry the action time
+   * (the same composite-report contract `runWhenReady` documents).
    */
-  if (runtime.preSdkInFlight !== null) {
-    await runtime.preSdkInFlight;
-    if (await isPreSdkRegistered({ storage: runtime.storage })) return;
-  }
-  const inFlight = (async (): Promise<void> => {
-    if (await isPreSdkRegistered({ storage: runtime.storage })) return;
-    await markPreSdkRegistered({ storage: runtime.storage });
-    runtime.dispatcher.addEventDateTime({
-      eventId: KEvents.PRE_SDK_REGISTRATION_DATE,
-      date,
-    });
-  })();
-  runtime.preSdkInFlight = inFlight;
-  try {
-    await inFlight;
-  } finally {
-    /** Clear only if the slot still points at this invocation's promise. */
-    if (runtime.preSdkInFlight === inFlight) {
-      runtime.preSdkInFlight = null;
+  const ts = nowUnixSec();
+  return runWhenReadyAsync(async (runtime) => {
+    /**
+     * Serialize concurrent callers via an in-flight Promise on the
+     * runtime. Without this latch, two parallel calls both observe
+     * `isPreSdkRegistered === false` (the check happens before
+     * either has had a chance to mark) and both emit the event,
+     * burning the one-shot slot with a duplicate. The second caller
+     * now awaits the first's check/mark/emit sequence, then
+     * re-checks `isPreSdkRegistered()` (which is now `true`) and
+     * silently no-ops. The latch lives on the runtime so
+     * `shutdown()` clears it - module-scope storage would survive
+     * shutdown + re-init and corrupt the one-shot contract across
+     * sessions.
+     */
+    if (runtime.preSdkInFlight !== null) {
+      await runtime.preSdkInFlight;
+      if (await isPreSdkRegistered({ storage: runtime.storage })) return;
     }
-  }
+    const inFlight = (async (): Promise<void> => {
+      if (await isPreSdkRegistered({ storage: runtime.storage })) return;
+      await markPreSdkRegistered({ storage: runtime.storage });
+      runtime.dispatcher.setFrameTimestamp(ts);
+      runtime.dispatcher.addEventDateTime({
+        eventId: KEvents.PRE_SDK_REGISTRATION_DATE,
+        date,
+      });
+    })();
+    runtime.preSdkInFlight = inFlight;
+    try {
+      await inFlight;
+    } finally {
+      /** Clear only if the slot still points at this invocation's promise. */
+      if (runtime.preSdkInFlight === inFlight) {
+        runtime.preSdkInFlight = null;
+      }
+    }
+  });
 }
 
 export { getInstallId, markAsTestUser, reportUserRegisteredBeforeSDKIntegration, setUserId };

@@ -9,10 +9,7 @@
  * `Content-Encoding: gzip`, `Content-Type: application/octet-stream`.
  *
  * `Content-Encoding: gzip` on POST means "the body is already
- * gzipped" - this layer never compresses on the fly. The
- * `signal === undefined ? {} : { signal }` spreads below are there
- * because `exactOptionalPropertyTypes: true` forbids assigning
- * `undefined` to `fetch`'s `signal: AbortSignal | null` field.
+ * gzipped" - this layer never compresses on the fly.
  */
 
 import type {
@@ -26,6 +23,7 @@ import { assertIntInRange, assertUint8Array } from '../encoding/assertions';
 import { LIMITS } from '../encoding/limits';
 import { assertHeaderValue } from './helpers/assertHeaderValue';
 import { CONTENT_TYPE_OCTET_STREAM, ENDPOINT_PATH } from './helpers/constants';
+import { hardenedRequestInit } from './helpers/hardenedRequestInit';
 import { resolveSdkTag } from './helpers/sdkTag';
 import { isAbortError } from './helpers/isAbortError';
 import { joinEndpoint } from './helpers/joinEndpoint';
@@ -101,44 +99,19 @@ async function getCustomEventMapStatus(
   });
   const url = joinEndpoint({ baseUrl, path: ENDPOINT_PATH.CUSTOM });
   /**
-   * `redirect: 'error'` rejects 3xx responses. Both `/custom`
-   * requests carry `K-Token`; default redirect-following would
-   * forward the API key to whatever URL the response advertises.
-   *
-   * `credentials: 'omit'` suppresses ambient cookies and HTTP
-   * authentication. Authentication is carried exclusively by the
-   * `K-Token` header; allowing `fetch` to attach the runtime's
-   * stored cookies (or platform-level Basic-Auth) would leak
-   * unrelated session material to the `/custom` endpoint.
-   *
-   * `cache: 'no-store'` defeats HTTP cache layers (browser HTTP
-   * cache, NSURLCache, OkHttp cache). The probe URL is always
-   * `/custom`; the version we are probing lives in the
-   * `K-CustomEventHash` header. An intermediary that keys cache
-   * entries by URL only (no `Vary` from the server) would otherwise
-   * return a stale `200` for one version when the caller probes a
-   * different version, the SDK would skip a needed registration,
-   * and subsequent batches would fail server-side.
-   *
-   * `referrerPolicy: 'no-referrer'` suppresses the `Referer` header
-   * that browser-based runtimes (Expo for web) would otherwise
-   * attach with the host app's origin or URL. The analytics
-   * endpoint has no use for that metadata.
+   * The probe URL is always `/custom` and the version under test
+   * lives in `K-CustomEventHash`, so the shared init's
+   * `cache: 'no-store'` is what stops an intermediary keying by URL
+   * alone from answering one version's probe with another's stale
+   * `200` - the SDK would skip a needed registration and every
+   * later batch would fail server-side.
    *
    * After every successful `fetch` the response body is released
    * via `releaseResponseBody` so the underlying socket returns to
    * the HTTP pool. We only inspect status; an unread body would
    * keep the connection busy in `undici`/Node native fetch.
    */
-  const init: RequestInit = {
-    method: 'GET',
-    cache: 'no-store',
-    credentials: 'omit',
-    redirect: 'error',
-    referrerPolicy: 'no-referrer',
-    headers,
-    ...(signal === undefined ? {} : { signal }),
-  };
+  const init = hardenedRequestInit({ method: 'GET', headers, signal });
   let response: Response;
   try {
     response = await resolveTransportFetch().call(globalThis, url, init);
@@ -240,41 +213,28 @@ async function registerCustomEventMap(args: RegisterCustomEventMapArgs): Promise
     extra: extraHeaders,
     fnName: 'registerCustomEventMap',
   });
+  const url = joinEndpoint({ baseUrl, path: ENDPOINT_PATH.CUSTOM });
   /**
+   * The registration URL is the constant `/custom` with the version
+   * in `K-CustomEventHash`, so the shared init's `cache: 'no-store'`
+   * is what stops a cache keying by URL alone from replaying a
+   * previous version's `2xx` and making the SDK believe a
+   * registration landed when nothing reached the server.
+   *
    * `BodyInit` cast: TS 5.7+ narrows `Uint8Array<ArrayBufferLike>`
    * too strictly against the `BodyInit` union, but `fetch` accepts
    * a `Uint8Array` at runtime as a `BufferSource`. The cast pins
    * the runtime contract without copying the bytes.
-   */
-  const url = joinEndpoint({ baseUrl, path: ENDPOINT_PATH.CUSTOM });
-  /**
-   * `credentials: 'omit'` suppresses ambient cookies and HTTP
-   * authentication on registration too: the only authentication
-   * material the server expects is `K-Token`.
-   *
-   * `cache: 'no-store'` mirrors the probe call. The endpoint URL
-   * is the constant `/custom`; the version being registered rides
-   * in `K-CustomEventHash`. A misbehaving cache (service worker,
-   * intermediary proxy) keying by URL alone could replay a stale
-   * `2xx` from a previous version and make the SDK believe a real
-   * registration succeeded when nothing reached the server.
-   *
-   * `referrerPolicy: 'no-referrer'` mirrors the probe call too -
-   * the `Referer` header has no place on an analytics transport.
    *
    * Response body release via `releaseResponseBody` keeps the
    * connection pool clean under load.
    */
-  const init: RequestInit = {
+  const init = hardenedRequestInit({
     method: 'POST',
-    cache: 'no-store',
-    credentials: 'omit',
-    redirect: 'error',
-    referrerPolicy: 'no-referrer',
     headers,
-    body: ceSet.gzipData as BodyInit,
-    ...(signal === undefined ? {} : { signal }),
-  };
+    body: ceSet.gzipData as NonNullable<RequestInit['body']>,
+    signal,
+  });
   try {
     const response = await resolveTransportFetch().call(globalThis, url, init);
     /*

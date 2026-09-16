@@ -156,6 +156,11 @@ class BinaryBatchBuilder implements BatchBuilder {
    * `finalBatchEndTime`, clamped up to its own start so a backward
    * wall-clock move between event time and seal time can never emit
    * an inverted interval.
+   *
+   * Each payload is COPIED out of the stream, never a view into it:
+   * the builder is reused after `reset`, and callers (the persist
+   * path's sealed-batch observer, and every async write below it)
+   * hold their slices past that point.
    */
   seal({ finalBatchEndTime }: SealArgs): EncodedBatchSlice[] {
     const payload = this.stream.toBytes();
@@ -176,7 +181,7 @@ class BinaryBatchBuilder implements BatchBuilder {
       const clampedEndTime = Math.max(sliceStart, cut.lastEventTime);
       if (cut.pos > lastReadPos) {
         slices.push({
-          payload: payload.subarray(lastReadPos, cut.pos),
+          payload: payload.slice(lastReadPos, cut.pos),
           batchStartTime: sliceStart,
           batchEndTime: clampedEndTime,
         });
@@ -186,7 +191,7 @@ class BinaryBatchBuilder implements BatchBuilder {
     }
     if (lastReadPos < payload.length) {
       slices.push({
-        payload: payload.subarray(lastReadPos),
+        payload: payload.slice(lastReadPos),
         batchStartTime: sliceStart,
         batchEndTime: Math.max(sliceStart, finalBatchEndTime),
       });
@@ -244,6 +249,12 @@ class BinaryBatchBuilder implements BatchBuilder {
 
 class BinaryCodec implements Codec {
   readonly id = BINARY_CODEC_ID;
+  /**
+   * A binary tombstone is fixed-size: container header + the 10-byte
+   * `BATCH_DROPPED` payload (6-byte record header + uint32 reason) +
+   * container footer = 70 bytes, regardless of the original batch.
+   */
+  readonly tombstoneCeilingBytes = KFILE_HEADER_SIZE + 10 + KFILE_FOOTER_SIZE;
 
   createBuilder(args: CreateBuilderArgs): BatchBuilder {
     return new BinaryBatchBuilder(args);

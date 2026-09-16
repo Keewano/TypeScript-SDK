@@ -3,6 +3,8 @@
  * `StorageAdapter` implementation.
  */
 
+import type { ScratchKind } from '@keewano/core';
+
 /**
  * String encodings the Expo file-system methods accept.
  */
@@ -118,6 +120,19 @@ interface ExpoStorageAdapterArgs {
   rootDir?: string;
 }
 
+/**
+ * Orphaned scratch sibling found by the crash-recovery sweep.
+ *
+ * scratchUri - Absolute URI of the orphaned scratch file.
+ * destinationUri - Absolute URI of the destination it belonged to.
+ * kind - Scratch role parsed from the basename.
+ */
+interface ScratchOrphan {
+  scratchUri: string;
+  destinationUri: string;
+  kind: ScratchKind;
+}
+
 export type {
   ExpoDeleteOption,
   ExpoEncodingOption,
@@ -128,4 +143,5 @@ export type {
   ExpoMakeDirectoryOption,
   ExpoMoveArgs,
   ExpoStorageAdapterArgs,
+  ScratchOrphan,
 };

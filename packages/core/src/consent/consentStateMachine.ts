@@ -55,15 +55,39 @@ async function persistConsentState(args: PersistConsentStateArgs): Promise<void>
 }
 
 /**
- * Read the persisted consent state from disk, or `null` when the
- * file is missing, not exactly `CONSENT_FILE_SIZE` bytes long, or
- * carries a value outside the known `ConsentState` enum range. The
- * exact-size check matches the regulatory fail-closed policy: a
- * file of any other length is treated as corruption or as a future
- * schema, not as a partial read.
+ * Read the recorded consent state from disk without creating one, or
+ * `null` when the file is missing, not exactly `CONSENT_FILE_SIZE`
+ * bytes long, or carries a value outside the known `ConsentState`
+ * enum range. The exact-size check matches the regulatory fail-closed
+ * policy: a file of any other length is treated as corruption or as a
+ * future schema, not as a partial read.
+ *
+ * {@link loadOrInitConsentState} is the boot path, and it writes an
+ * initial record when none exists. An observer must not: a caller
+ * that reacts to someone else's decision (another tab of the same
+ * origin) has to be able to tell "no record" from a real value, or a
+ * cleared store would look like a fresh install and silently undo a
+ * withdrawal.
+ *
+ * Unqueued on purpose: a read that overlaps a transition returns
+ * either the old or the new recorded value, and both are states the
+ * caller may legitimately act on.
  */
-async function readPersistedConsentState(storage: StorageAdapter): Promise<ConsentState | null> {
-  const bytes = await storage.readFile({ path: CONSENT_FILENAME });
+async function readConsentState(storage: StorageAdapter): Promise<ConsentState | null> {
+  return decodeConsentState(await storage.readFile({ path: CONSENT_FILENAME }));
+}
+
+/**
+ * Decode the bytes of a consent file, applying the same fail-closed
+ * rules {@link readConsentState} applies to a stored record.
+ *
+ * Separate from the read so a host whose storage can answer without
+ * awaiting - a browser ladder backed by `localStorage` and cookies -
+ * can consult the record from a context that cannot await one, such
+ * as a page being torn down. The encoding then stays defined here
+ * alone rather than being restated by every such caller.
+ */
+function decodeConsentState(bytes: Uint8Array | null): ConsentState | null {
   if (bytes?.length !== CONSENT_FILE_SIZE) {
     return null;
   }
@@ -136,7 +160,7 @@ async function loadOrInitConsentState(args: LoadOrInitConsentStateArgs): Promise
     storage,
     fallback: initial,
     op: async () => {
-      const persisted = await readPersistedConsentState(storage);
+      const persisted = await readConsentState(storage);
       if (persisted !== null) {
         return persisted;
       }
@@ -162,12 +186,14 @@ async function loadOrInitConsentState(args: LoadOrInitConsentStateArgs): Promise
  * still `Pending` but the caller claims to be terminal (the
  * caller's `current` is wrong; the caller must re-prompt).
  *
- * The persist write is best-effort: if it throws (disk full / I/O)
- * the transition is still returned so the caller applies it in memory
- * this session. A Deny must take effect - stop sending and purge -
- * even when it cannot be written, rather than fail open by staying
- * Pending. The choice is then not durable: the next launch re-reads
- * the still-Pending file and re-prompts, the conservative default.
+ * Both disk steps are best-effort in the Deny direction, for one
+ * reason: a Deny must take effect - stop sending and purge - even when
+ * the disk will not cooperate, rather than fail open by staying
+ * Pending. So a persist that throws still returns the transition, and
+ * a read that throws still lets the Deny through. The choice is then
+ * not durable: the next launch re-reads the still-Pending file and
+ * re-prompts, the conservative default. A Grant over an unreadable
+ * record is refused instead, since that record may hold a Denied.
  *
  * @returns The state after the call: the persisted value when one
  *   exists (terminal OR pending), `current` for a non-Pending no-op
@@ -180,7 +206,22 @@ async function setConsent(args: SetConsentArgs): Promise<ConsentState> {
     storage,
     fallback: current,
     op: async () => {
-      const persisted = await readPersistedConsentState(storage);
+      let persisted: ConsentState | null = null;
+      try {
+        persisted = await readConsentState(storage);
+      } catch (err: unknown) {
+        /**
+         * The record is unreadable (I/O). Direction decides what that
+         * means, the same way the failed persist below is decided by
+         * it: a Deny still takes effect this session, because refusing
+         * one over a disk error leaves on disk the very data the user
+         * asked to be gone. A Grant does not - an unreadable file may
+         * hold a Denied, and re-opening delivery over one is the unsafe
+         * way to be wrong.
+         */
+        console.error('Keewano: consent read failed.', err);
+        if (granted) throw err;
+      }
       if (persisted !== null) {
         if (persisted !== ConsentState.Pending) {
           return persisted;
@@ -217,4 +258,4 @@ async function setConsent(args: SetConsentArgs): Promise<ConsentState> {
   });
 }
 
-export { loadOrInitConsentState, setConsent };
+export { decodeConsentState, loadOrInitConsentState, readConsentState, setConsent };

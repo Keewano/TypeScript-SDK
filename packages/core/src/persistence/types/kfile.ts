@@ -17,12 +17,17 @@ import type { StorageAdapter } from '../../storage';
  * batchEndTime - Parsed `batchEndTime` from the filename.
  * batchNum - Parsed `batchNum` from the filename.
  * size - File length in bytes, as reported by the storage adapter.
+ * filenameSuffix - Parsed multi-writer discriminator, when the
+ *   filename carries one. A consumer that rewrites the file MUST
+ *   write through the same suffix, or the replacement lands at a
+ *   different path and the original lives on.
  */
 interface BatchFileInfo {
   path: string;
   batchEndTime: number;
   batchNum: number;
   size: number;
+  filenameSuffix?: string;
 }
 
 /**
@@ -31,12 +36,15 @@ interface BatchFileInfo {
  *   stored. The full path resolves to `${dir}/${batchEndTime}_${batchNum}.kwub`.
  * codec - Codec whose `serializeContainer` produces the stored bytes.
  * batch - Batch to persist. The source object is not mutated.
+ * filenameSuffix - Optional multi-writer discriminator appended to the
+ *   filename so concurrent writers sharing the store cannot collide.
  */
 interface SaveBatchArgs {
   storage: StorageAdapter;
   dir: string;
   codec: Codec;
   batch: EncodedBatch;
+  filenameSuffix?: string;
 }
 
 /**

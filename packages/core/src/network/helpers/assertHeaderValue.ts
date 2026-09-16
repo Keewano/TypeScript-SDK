@@ -20,7 +20,7 @@
  *     the transport - too late to surface as a clean TypeError.
  *   - Non-ByteString characters (code point > 0xFF). HTTP header
  *     values are restricted to ByteString per the Fetch spec;
- *     multi-byte Unicode (Cyrillic, emoji, etc.) fails header
+ *     multi-byte Unicode (Cyrillic and beyond) fails header
  *     validation. Reject up front instead of letting the request
  *     fail mid-send.
  */

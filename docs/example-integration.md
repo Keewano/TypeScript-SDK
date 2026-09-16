@@ -72,10 +72,14 @@ Keewano.reportOnboardingMilestone('TutorialComplete');
 
 ## 5. Add a custom event
 
-Declare your own events, generate typed helpers, and call them:
+Declare your own events, generate typed helpers, and call them. `--target expo` matches
+the package installed above; the default target generates against
+`@keewano/react-native-sdk` instead:
 
 ```bash
-npx keewano-codegen --input keewano-custom-events
+mkdir keewano-custom-events
+npx keewano-codegen add GameScore --type uint
+npx keewano-codegen --target expo
 ```
 
 ```typescript

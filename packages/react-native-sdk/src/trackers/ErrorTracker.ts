@@ -11,16 +11,19 @@
  * after us keeps its patch in place - we never reach past it.
  *
  * Message format is `"Caught exception {message} at {stack}"` (see
- * `formatErrorMessage.ts`). Long error messages and stack traces pass
- * through unchanged - the dispatcher's string event has no length cap
- * and ERROR_MSG bypasses the 256-char truncation so crash context
- * survives intact.
+ * `formatErrorMessage.ts`). ERROR_MSG is exempt from the 256-char cap
+ * every other string report carries, so a deep stack survives, but it
+ * is still bounded by core's error ceiling - the same one `logError`
+ * and the web tracker apply. Unbounded is not an option: the event
+ * joins whichever batch slice is open and can push it past what the
+ * server accepts, and that rejection is permanent, taking every real
+ * event beside it.
  */
 
 import type { KeewanoTracker } from '../types/config';
 import type { ErrorHandler, ErrorTrackerArgs } from './types/ErrorTracker';
 
-import { KEvents } from '@keewano/core';
+import { KEvents, truncateErrorMessage } from '@keewano/core';
 
 import { defaultErrorHandler, defaultLoadErrorUtils } from './errorUtilsHelpers';
 import { formatErrorMessage } from './formatErrorMessage';
@@ -129,7 +132,7 @@ class ErrorTracker implements KeewanoTracker {
       stampNowOnDispatcher(this.args.dispatcher);
       this.args.dispatcher.addEventString({
         eventId: KEvents.ERROR_MSG,
-        str: formatErrorMessage(error),
+        str: truncateErrorMessage(formatErrorMessage(error)),
       });
     } catch {
       /** A throw from the dispatcher must not break the host's crash reporter. */

@@ -1,7 +1,12 @@
 /**
  * Parse and format the on-disk batch filename. The canonical shape
  * is `${batchEndTime}_${batchNum}.kwub` so a cross-platform dump is
- * interchangeable between any wire-compatible producer.
+ * interchangeable between any wire-compatible producer. A store with
+ * several concurrent writers (browser tabs sharing one origin) may
+ * append an opaque `_${suffix}` discriminator so two writers whose
+ * clocks and counters collide can never overwrite each other's file;
+ * parsing accepts and ignores it, and single-writer platforms never
+ * emit it.
  *
  * `batchEndTime` (the dominant sort key) leads so a lexicographic
  * directory listing is already chronological for batches captured
@@ -23,10 +28,19 @@
  */
 
 /**
- * `(digits)_(digits).kwub` shape. Anchored on both ends so a partial
- * match (e.g. embedded inside a scratch sibling name) is rejected.
+ * `(digits)_(digits)[_hexsuffix].kwub` shape. Anchored on both ends so
+ * a partial match (e.g. embedded inside a scratch sibling name) is
+ * rejected; the optional third segment is the multi-writer
+ * discriminator described in the header.
  */
-const BATCH_FILENAME_PATTERN = /^(\d+)_(\d+)\.kwub$/;
+const BATCH_FILENAME_PATTERN = /^(\d+)_(\d+)(?:_([0-9a-f]{8,16}))?\.kwub$/;
+
+/**
+ * Allowed discriminator shape: 8-16 lowercase hex chars. The 8-char
+ * floor keeps short all-digit garbage like `1_2_3.kwub` rejected as
+ * before - a real discriminator (UUID-derived) is never that short.
+ */
+const FILENAME_SUFFIX_PATTERN = /^[0-9a-f]{8,16}$/;
 
 const BATCH_FILE_EXTENSION = '.kwub';
 
@@ -36,10 +50,13 @@ const BATCH_FILE_EXTENSION = '.kwub';
  * batchEndTime - Unix seconds (UTC). Must be a non-negative integer.
  * batchNum - Monotonic per-dispatcher sequence. Must be a non-negative
  *   integer.
+ * filenameSuffix - Optional multi-writer discriminator (short
+ *   lowercase hex); appended as a third `_` segment.
  */
 interface FormatBatchFilenameArgs {
   batchEndTime: number;
   batchNum: number;
+  filenameSuffix?: string;
 }
 
 /**
@@ -54,18 +71,37 @@ interface BatchFilePathArgs {
   dir: string;
   batchEndTime: number;
   batchNum: number;
+  filenameSuffix?: string;
 }
 
 /**
  * Parsed view of the batch filename returned by
  * {@link parseBatchFilename}.
+ *
+ * filenameSuffix - Multi-writer discriminator when the name carried
+ *   one; consumers that rebuild the path MUST forward it or they
+ *   would target a file that does not exist.
  */
 interface ParsedBatchFilename {
   batchEndTime: number;
   batchNum: number;
+  filenameSuffix?: string;
 }
 
-function formatBatchFilename({ batchEndTime, batchNum }: FormatBatchFilenameArgs): string {
+/**
+ * `true` when `suffix` is a well-formed multi-writer discriminator.
+ * Single source of the rule: `formatBatchFilename` throws through it
+ * per write, boot-time callers reject through it before any write.
+ */
+function isValidFilenameSuffix(suffix: string): boolean {
+  return FILENAME_SUFFIX_PATTERN.test(suffix);
+}
+
+function formatBatchFilename({
+  batchEndTime,
+  batchNum,
+  filenameSuffix,
+}: FormatBatchFilenameArgs): string {
   /**
    * Bounds mirror `writeKFileHeader` so a filename can never describe a
    * batch the header layer cannot encode. `batchEndTime` is written as
@@ -80,7 +116,13 @@ function formatBatchFilename({ batchEndTime, batchNum }: FormatBatchFilenameArgs
   if (!Number.isSafeInteger(batchNum) || batchNum < 0 || batchNum > 0x7fffffff) {
     throw new RangeError('formatBatchFilename: batchNum must be a non-negative int32');
   }
-  return `${batchEndTime}_${batchNum}${BATCH_FILE_EXTENSION}`;
+  if (filenameSuffix === undefined) {
+    return `${batchEndTime}_${batchNum}${BATCH_FILE_EXTENSION}`;
+  }
+  if (!isValidFilenameSuffix(filenameSuffix)) {
+    throw new RangeError('formatBatchFilename: filenameSuffix must be 8-16 lowercase hex chars');
+  }
+  return `${batchEndTime}_${batchNum}_${filenameSuffix}${BATCH_FILE_EXTENSION}`;
 }
 
 /**
@@ -90,8 +132,12 @@ function formatBatchFilename({ batchEndTime, batchNum }: FormatBatchFilenameArgs
  * before the filename - matches `storage.resolveUnderRoot`'s
  * doubled-separator rejection.
  */
-function batchFilePath({ dir, batchEndTime, batchNum }: BatchFilePathArgs): string {
-  const filename = formatBatchFilename({ batchEndTime, batchNum });
+function batchFilePath({ dir, batchEndTime, batchNum, filenameSuffix }: BatchFilePathArgs): string {
+  const filename = formatBatchFilename({
+    batchEndTime,
+    batchNum,
+    ...(filenameSuffix === undefined ? {} : { filenameSuffix }),
+  });
   if (dir.length === 0) {
     return filename;
   }
@@ -148,10 +194,22 @@ function parseBatchFilename(basename: string): ParsedBatchFilename | null {
    * `formatBatchFilename` enforces the canonical leading-digit shape
    * with no extra regex complexity.
    */
-  if (basename !== formatBatchFilename({ batchEndTime, batchNum })) {
+  const filenameSuffix = match[3];
+  if (
+    basename !==
+    formatBatchFilename({
+      batchEndTime,
+      batchNum,
+      ...(filenameSuffix === undefined ? {} : { filenameSuffix }),
+    })
+  ) {
     return null;
   }
-  return { batchEndTime, batchNum };
+  return {
+    batchEndTime,
+    batchNum,
+    ...(filenameSuffix === undefined ? {} : { filenameSuffix }),
+  };
 }
 
 export type { BatchFilePathArgs, FormatBatchFilenameArgs, ParsedBatchFilename };
@@ -160,5 +218,6 @@ export {
   BATCH_FILE_EXTENSION,
   batchFilePath,
   formatBatchFilename,
+  isValidFilenameSuffix,
   parseBatchFilename,
 };

@@ -28,7 +28,7 @@ The Node SDK runs as a relay: one server process reports analytics on behalf of 
 ```ts
 import { Keewano } from '@keewano/node-sdk';
 
-await Keewano.init({ apiKey: 'YOUR_API_KEY' });
+await Keewano.init({ apiKey: 'YOUR_API_KEY', dataDir: '/var/lib/my-service/keewano' });
 
 await Keewano.reportUserBatch({
   userId: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
@@ -40,6 +40,8 @@ await Keewano.reportUserBatch({
 
 await Keewano.shutdown();
 ```
+
+`dataDir` is required unless you supply your own `storage`; there is no default location, because a directory holds batches addressed to one project and must be private to this process. `shutdown` gives whatever is still queued a bounded chance to ship (3 seconds by default, `shutdownGraceMs` to change it), so the sequence above delivers even from a script that exits straight after reporting.
 
 The `build` callback runs synchronously and receives a reporter scoped to that one user's batch. Using the reporter after `build` returns, or from an `async` build, throws instead of attributing events to the wrong user.
 

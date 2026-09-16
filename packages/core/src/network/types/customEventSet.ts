@@ -1,18 +1,23 @@
 import type { CustomEventTypeValue } from '../../events/customEventType';
 
 /**
- * One declared custom event, in declaration order. The array position
- * in {@link CustomEventSet.events} is the wire-id offset: the Nth entry
- * is event id `2500 + N`. Carried in readable form (not just inside the
- * gzip blob) so the runtime can resolve a name to its id and payload
- * type when the host emits the event, without inflating the map.
+ * One declared custom event, in id order. Carried in readable form (not
+ * just inside the gzip blob) so the runtime can resolve a name to its id
+ * and payload type when the host emits the event, without inflating the
+ * map.
  *
- * name - Event name exactly as declared (codegen sorts events
- *   ordinal-by-name, which fixes the index and therefore the id).
+ * id - Wire event id, written by hand in the definition file and carried
+ *   through unchanged, so a set may skip numbers where an event was
+ *   removed. Absent only in a file generated before it was emitted;
+ *   those sets were numbered by position, which is what the runtime
+ *   falls back to. Resolve it through `customEventIdAt`, never off the
+ *   array position.
+ * name - Event name exactly as declared.
  * type - Payload shape; tells the runtime which dispatcher overload to
  *   call.
  */
 interface CustomEventDef {
+  id?: number | undefined;
   name: string;
   type: CustomEventTypeValue;
 }
@@ -32,9 +37,11 @@ interface CustomEventDef {
  * eventCount - Number of events declared in the map. Sent as
  *   `K-CustomEventCount` (decimal uint16).
  * events - Declared events in id order, used by the runtime to resolve
- *   a `reportCustomEvent` name to its id and payload type. Optional so
- *   a set built only for registration (e.g. a transport smoke) stays
- *   valid; codegen always emits it so generated maps can report events.
+ *   a `reportCustomEvent` name to its id and payload type. Optional
+ *   only for the binary registration protocol, which uploads
+ *   `gzipData`; JSON registration builds its body from these entries
+ *   and cannot register a set without them. Codegen always emits it,
+ *   with exactly `eventCount` entries.
  */
 interface CustomEventSet {
   version: number;

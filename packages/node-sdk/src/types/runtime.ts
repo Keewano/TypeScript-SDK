@@ -8,13 +8,16 @@
  * The relay SDK keeps no self-telemetry, so several base fields are inert:
  * `dispatcher` is an empty send-loop dispatcher that never accumulates
  * (every user's events go to a per-batch dispatcher inside
- * `reportUserBatch`); `installId` exists only to construct that dispatcher
- * and never reaches the wire (the send loop ships with no `K-InstallId`)
- * or disk; `userId` is the all-zero "no user" marker; `onboardingCounters`
+ * `reportUserBatch`); `installId` is the relay's project id (API-key claim,
+ * `config.installId` override, or the all-zero server-relay marker),
+ * shipped as `K-InstallId` on every batch and never persisted to disk;
+ * `userId` is the all-zero "no user" marker; `onboardingCounters`
  * is swapped for a fresh per-batch map during each `reportUserBatch`.
  *
  * config - the caller-supplied config (re-init checks, send-loop wiring).
  * endpoint - resolved ingress URL (config override or library default).
+ * shutdownGraceMs - how long teardown may spend shipping what is still
+ *   queued; resolved once at init so exit reads a number, not a config.
  * dataSessionId - 16-byte UUID, freshly generated once per init and shared
  *   by every batch this process ships.
  * sendLoopAbort - AbortController that stops the background send loop on
@@ -33,6 +36,7 @@ import type { NodeKeewanoConfig } from './config';
 interface NodeRuntime extends KeewanoRuntime {
   config: NodeKeewanoConfig;
   endpoint: string;
+  shutdownGraceMs: number;
   dataSessionId: Uint8Array;
   sendLoopAbort: AbortController;
   sendLoopPromise: Promise<void> | null;

@@ -3,6 +3,8 @@
  * `StorageAdapter` implementation.
  */
 
+import type { ScratchKind } from '@keewano/core';
+
 /**
  * Stat-style entry returned by `readDir`. The real `react-native-fs`
  * module also exposes `path`/`mtime`/`ctime`; the adapter only needs
@@ -77,4 +79,17 @@ interface BareRNStorageAdapterArgs {
   rnfs?: RNFSLike;
 }
 
-export type { BareRNStorageAdapterArgs, RNFSDirEntry, RNFSLike, RNFSStatResult };
+/**
+ * Orphaned scratch sibling found by the crash-recovery sweep.
+ *
+ * scratchPath - Absolute path of the orphaned scratch file.
+ * destination - Absolute path of the destination it belonged to.
+ * kind - Scratch role parsed from the basename.
+ */
+interface ScratchOrphan {
+  scratchPath: string;
+  destination: string;
+  kind: ScratchKind;
+}
+
+export type { BareRNStorageAdapterArgs, RNFSDirEntry, RNFSLike, RNFSStatResult, ScratchOrphan };

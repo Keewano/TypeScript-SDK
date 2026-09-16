@@ -1,7 +1,10 @@
 /**
  * Node.js `StorageAdapter` backed by `node:fs/promises`. Every value the
- * SDK persists is a file under an SDK-owned sandbox root (default
- * `<os.tmpdir()>/keewano`, overridable via `dataDir`).
+ * SDK persists is a file under the sandbox root named by `dataDir`.
+ * There is no default, deliberately: a queue directory is addressed to
+ * one project, a batch inside it carries its own user and payload, and
+ * a process reading a neighbour's file ships that neighbour's end users
+ * into its own project.
  *
  * Writes are atomic with no backup/swap dance: `node:fs/promises.rename`
  * is an atomic replace on
@@ -29,9 +32,12 @@
 
 import type { Dirent } from 'node:fs';
 
-import type { NodeFsLike, NodeStorageAdapterArgs } from './types/nodeStorageAdapter';
+import type {
+  NodeFsLike,
+  NodeStorageAdapterArgs,
+  SweepScratchArgs,
+} from './types/nodeStorageAdapter';
 
-import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 import {
@@ -59,7 +65,12 @@ import {
   statOrNull,
 } from './helpers/fs';
 
-const DEFAULT_SUBDIR = 'keewano';
+/**
+ * How old a scratch sibling must be before the sweep treats it as
+ * abandoned. Far past any single write, so a file this old cannot be
+ * one another process is still staging.
+ */
+const ORPHANED_SCRATCH_AGE_MS = 60 * 60 * 1000;
 
 class NodeStorageAdapter implements StorageAdapter {
   private readonly rootDir: string;
@@ -69,11 +80,16 @@ class NodeStorageAdapter implements StorageAdapter {
    * @param args - Optional sandbox root override (`dataDir`) and a
    *   filesystem seam (`fs`). See `NodeStorageAdapterArgs`.
    */
-  constructor(args: NodeStorageAdapterArgs = {}) {
-    if (args.dataDir?.length === 0) {
-      throw new Error('NodeStorageAdapter: empty dataDir');
+  constructor(args: NodeStorageAdapterArgs) {
+    /**
+     * Reads `args` defensively: a JavaScript host reaching this with
+     * nothing at all would otherwise get a property-of-undefined error
+     * that names neither the adapter nor the field it wants.
+     */
+    if (typeof args?.dataDir !== 'string' || args.dataDir.length === 0) {
+      throw new Error('NodeStorageAdapter: dataDir is required');
     }
-    this.rootDir = resolve(args.dataDir ?? join(tmpdir(), DEFAULT_SUBDIR));
+    this.rootDir = resolve(args.dataDir);
     this.fs = args.fs ?? REAL_FS;
   }
 
@@ -91,13 +107,20 @@ class NodeStorageAdapter implements StorageAdapter {
     if (!(bytes instanceof Uint8Array)) {
       throw new TypeError('writeFile: not a Uint8Array');
     }
+    /**
+     * Copied here, before the first await rather than at the write:
+     * the caller is told it may reuse its buffer once this returns to
+     * the event loop, and everything between then and the write is
+     * time in which it can.
+     */
+    const owned = new Uint8Array(bytes);
     validPath({ path, fnName: 'writeFile' });
     const fullPath = this.resolveFullPath(path);
     await assertNotDirectory(this.fs, fullPath);
     await ensureParentDir(this.fs, fullPath);
     const tmpPath = `${fullPath}.${SCRATCH_TMP_INFIX}.${generateOpId()}`;
     try {
-      await this.fs.writeFile(tmpPath, new Uint8Array(bytes));
+      await this.fs.writeFile(tmpPath, owned);
       await this.fs.rename(tmpPath, fullPath);
     } catch (error) {
       await bestEffortUnlink(this.fs, tmpPath);
@@ -214,6 +237,45 @@ class NodeStorageAdapter implements StorageAdapter {
     }
     const regex = globToRegex(pattern);
     return names.filter((name) => regex.test(name));
+  }
+
+  /**
+   * Delete scratch siblings a killed process left behind.
+   *
+   * A write stages to `<name>.<infix>.<opId>` and renames it over the
+   * destination; a process killed between those two steps leaves the
+   * staged file. `listFiles` hides scratch siblings, so the file is
+   * invisible to the batch listing and to the disk cap that would
+   * otherwise reclaim it - it occupies the budget forever without
+   * being a candidate for eviction.
+   *
+   * Age-gated rather than gated on "we are the only process here":
+   * a live write's scratch file is milliseconds old, so anything past
+   * the threshold cannot belong to a write still in progress, and the
+   * sweep stays correct even where two processes share a directory.
+   *
+   * Best-effort throughout: this reclaims space, and failing to
+   * reclaim it must never stop the SDK from starting.
+   */
+  async sweepOrphanedScratchFiles({ dir }: SweepScratchArgs): Promise<void> {
+    const fullDir = this.resolveFullPath(dir);
+    let entries: Dirent[];
+    try {
+      entries = await this.fs.readdir(fullDir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    const staleBefore = Date.now() - ORPHANED_SCRATCH_AGE_MS;
+    for (const entry of entries) {
+      if (entry.isDirectory() || !isScratchSibling(entry.name)) continue;
+      const candidate = join(fullDir, entry.name);
+      try {
+        const stats = await this.fs.stat(candidate);
+        if (stats.mtimeMs < staleBefore) await this.fs.unlink(candidate);
+      } catch {
+        /** Gone already, or unreadable; either way not this run's problem. */
+      }
+    }
   }
 
   /**

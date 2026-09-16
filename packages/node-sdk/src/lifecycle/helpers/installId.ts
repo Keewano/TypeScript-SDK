@@ -47,7 +47,7 @@ function projectIdFromApiKey(apiKey: string): string | null {
  *   falls back to the all-zero id, since the API key is opaque to the
  *   host and must not crash init.
  */
-function resolveInstallId(config: NodeKeewanoConfig): Uint8Array {
+function resolveInstallId(config: Pick<NodeKeewanoConfig, 'apiKey' | 'installId'>): Uint8Array {
   if (typeof config.installId === 'string' && config.installId.length > 0) {
     return uuidToBytes(config.installId);
   }

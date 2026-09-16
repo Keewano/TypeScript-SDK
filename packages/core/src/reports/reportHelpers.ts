@@ -17,6 +17,10 @@ import type { KeewanoRuntime } from '../runtime';
 
 import { enqueuePreInit, getRuntime, isInitialized, isInitializing } from '../runtime';
 
+/** TextEncoder/TextDecoder are stateless; allocate once at module load. */
+const utf8Encoder = new TextEncoder();
+const utf8Decoder = new TextDecoder();
+
 const NOT_INITIALIZED_MESSAGE = 'Keewano: SDK not initialized. Call Keewano.init() first.';
 
 /**
@@ -28,36 +32,95 @@ const NOT_INITIALIZED_MESSAGE = 'Keewano: SDK not initialized. Call Keewano.init
 const MAX_STRING_LENGTH = 256;
 
 /**
- * Truncate `value` to {@link MAX_STRING_LENGTH} characters. Returns
- * the input unchanged when it is already short enough. Long strings
- * (e.g. `logError` payloads) bypass this helper and pass through the
- * dispatcher's string-event method directly so debug detail survives.
+ * Drop a trailing lone high surrogate.
  *
- * The slice operates on UTF-16 code units, so a non-BMP code point
- * (any character outside the Basic Multilingual Plane - emojis,
- * many CJK extension characters, etc.) is two code units (a high
- * surrogate followed by a low surrogate). A naive `.slice(0, 256)`
- * can land between those two units and leave a trailing lone high
- * surrogate; the UTF-8 encoder used by the wire layer then writes
- * U+FFFD for that orphan, corrupting the character. We back off by
- * one code unit when the slice ends on a high surrogate so the
- * truncation always lands on a character boundary.
+ * Every cut in this file operates on UTF-16 code units, so a non-BMP
+ * code point (any character outside the Basic Multilingual Plane -
+ * such as the CJK extension blocks) is two units: a high
+ * surrogate followed by a low one. A cut can land between them, and
+ * the UTF-8 encoder in the wire layer writes U+FFFD for the orphan,
+ * corrupting the character. Backing off one unit lands the cut on a
+ * character boundary instead.
+ *
+ * Every code unit that shortens a string headed for the wire goes
+ * through here. A caller doing its own `.slice` afterwards reopens the
+ * hole: the suffix reservation in `reportOnboardingMilestone` did, and
+ * corrupted the label on every repeat.
  */
-function truncateString(value: string): string {
-  if (value.length <= MAX_STRING_LENGTH) return value;
-  const sliced = value.slice(0, MAX_STRING_LENGTH);
+function dropDanglingSurrogate(value: string): string {
+  if (value.length === 0) return value;
   /**
-   * At the end of `sliced` there is no following code unit, so
+   * At the end of `value` there is no following code unit, so
    * `codePointAt` at the last index returns the raw code-unit
    * value (the high surrogate itself, in the 0xD800-0xDBFF range)
    * instead of folding it into a paired code point - which is
    * exactly what we want to detect a lone high surrogate.
    */
-  const lastCode = sliced.codePointAt(sliced.length - 1) ?? 0;
+  const lastCode = value.codePointAt(value.length - 1) ?? 0;
   if (lastCode >= 0xd800 && lastCode <= 0xdbff) {
-    return sliced.slice(0, -1);
+    return value.slice(0, -1);
   }
-  return sliced;
+  return value;
+}
+
+/**
+ * Truncate `value` to {@link MAX_STRING_LENGTH} characters. Returns
+ * the input unchanged when it is already short enough. Long strings
+ * (e.g. `logError` payloads) bypass this helper and pass through the
+ * dispatcher's string-event method directly so debug detail survives.
+ */
+function truncateString(value: string): string {
+  if (value.length <= MAX_STRING_LENGTH) return value;
+  return dropDanglingSurrogate(value.slice(0, MAX_STRING_LENGTH));
+}
+
+/**
+ * Ceiling for an error payload. Error text is deliberately allowed to
+ * be far longer than {@link MAX_STRING_LENGTH} so a stack survives,
+ * but it cannot be unbounded: an event is appended to whichever batch
+ * slice is open, and the cut that would start a new one is decided
+ * from the size BEFORE it. A single oversized message therefore joins
+ * the real events already accumulated and pushes the whole slice past
+ * what the server accepts, and a rejection on those grounds is
+ * permanent - the batch is dropped, taking those events with it. 8 KB
+ * holds a message plus a deep stack.
+ *
+ * The budget this protects is measured in bytes, so this one is too -
+ * unlike {@link MAX_STRING_LENGTH}, which is a limit on how long a
+ * label may be and is therefore counted in characters. Counting code
+ * units here would leave the real ceiling three times higher than the
+ * number says, since a character outside Latin encodes to up to three
+ * UTF-8 bytes.
+ */
+const MAX_ERROR_MESSAGE_BYTES = 8 * 1024;
+
+/**
+ * Truncate an error payload to {@link MAX_ERROR_MESSAGE_BYTES} of
+ * UTF-8, landing on a character boundary.
+ *
+ * Encoding once and cutting the bytes is what makes the bound exact.
+ * Searching for the longest string that fits would re-encode a
+ * candidate on every step, and this runs on the error path, which a
+ * failing page can drive in a loop.
+ */
+function truncateErrorMessage(value: string): string {
+  const bytes = utf8Encoder.encode(value);
+  if (bytes.length <= MAX_ERROR_MESSAGE_BYTES) return value;
+  let end = MAX_ERROR_MESSAGE_BYTES;
+  /**
+   * A UTF-8 continuation byte is 10xxxxxx. While the cut lands on one,
+   * it is inside a character; walking back leaves `end` on that
+   * character's lead byte, and cutting there drops it whole rather
+   * than handing the decoder a partial sequence it would replace with
+   * U+FFFD.
+   */
+  while (end > 0 && ((bytes[end] ?? 0) & 0xc0) === 0x80) end -= 1;
+  return utf8Decoder.decode(bytes.subarray(0, end));
+}
+
+/** Sample current Unix seconds (UTC). Single source of truth for wire timestamps. */
+function nowUnixSec(): number {
+  return Math.floor(Date.now() / 1000);
 }
 
 /**
@@ -75,8 +138,17 @@ function truncateString(value: string): string {
  * inside `fn`, so the per-burst contract still holds.
  */
 function runWhenReady<T extends KeewanoRuntime = KeewanoRuntime>(fn: (runtime: T) => void): void {
-  const ts = Math.floor(Date.now() / 1000);
+  const ts = nowUnixSec();
   const op = (runtime: T): void => {
+    /**
+     * Asked here as well as in the dispatcher, and the two are not
+     * redundant: the dispatcher stops the trackers, which hold it
+     * directly, while this stops the work a report method does around
+     * its emit. A method that writes a one-shot marker or advances a
+     * counter and only then emits would otherwise spend that side
+     * effect on an event the dispatcher is about to drop.
+     */
+    if (!runtime.dispatcher.collecting) return;
     runtime.dispatcher.setFrameTimestamp(ts);
     fn(runtime);
   };
@@ -111,7 +183,7 @@ function runWhenReady<T extends KeewanoRuntime = KeewanoRuntime>(fn: (runtime: T
 function runWhenReadyAsync<T extends KeewanoRuntime = KeewanoRuntime>(
   fn: (runtime: T) => Promise<void>,
 ): Promise<void> {
-  const ts = Math.floor(Date.now() / 1000);
+  const ts = nowUnixSec();
   if (!isInitialized()) {
     /**
      * Mirror the sync guard: a queued op that never drains would
@@ -144,6 +216,10 @@ function runWhenReadyAsync<T extends KeewanoRuntime = KeewanoRuntime>(
          */
         try {
           const live = getRuntime<T>();
+          if (!live.dispatcher.collecting) {
+            resolve();
+            return;
+          }
           live.dispatcher.setFrameTimestamp(ts);
           Promise.resolve(fn(live)).then(resolve, reject);
         } catch (err: unknown) {
@@ -153,6 +229,7 @@ function runWhenReadyAsync<T extends KeewanoRuntime = KeewanoRuntime>(
     });
   }
   const runtime = getRuntime<T>();
+  if (!runtime.dispatcher.collecting) return Promise.resolve();
   /**
    * Immediate path: setFrameTimestamp(ts) + fn(runtime) run in the
    * caller's task synchronously, preserving emission order against
@@ -169,4 +246,13 @@ function runWhenReadyAsync<T extends KeewanoRuntime = KeewanoRuntime>(
   }
 }
 
-export { MAX_STRING_LENGTH, runWhenReady, runWhenReadyAsync, truncateString };
+export {
+  MAX_ERROR_MESSAGE_BYTES,
+  MAX_STRING_LENGTH,
+  dropDanglingSurrogate,
+  nowUnixSec,
+  runWhenReady,
+  runWhenReadyAsync,
+  truncateErrorMessage,
+  truncateString,
+};

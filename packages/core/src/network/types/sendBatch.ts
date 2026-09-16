@@ -74,6 +74,7 @@ interface SendBatchArgs {
   testUser?: string | null;
   signal?: AbortSignal;
   extraHeaders?: Record<string, string>;
+  onFailure?: (reason: string) => void;
 }
 
 export type { SendBatchArgs, SendBatchInput };

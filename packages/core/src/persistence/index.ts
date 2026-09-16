@@ -24,6 +24,7 @@ export type {
   TotalBatchSizeArgs,
 } from './types/kfile';
 export type { ReduceStorageSizeArgs } from './types/storageCap';
+export type { SeedNextBatchNumArgs } from './types/seedBatchNum';
 
 /**
  * UUID byte length. Re-exported as a shared primitive (identity, network,
@@ -32,5 +33,14 @@ export type { ReduceStorageSizeArgs } from './types/storageCap';
  */
 export { UUID_SIZE } from './helpers/kfileHeader';
 
+/**
+ * Suffix validity check. Re-exported (unlike the other filename
+ * internals) so the send loop can reject a drifted discriminator at
+ * startup with the exact rule `formatBatchFilename` enforces per
+ * write, where the throw would be swallowed into a dropped batch.
+ */
+export { isValidFilenameSuffix } from './helpers/batchFilename';
+
 export { deleteBatch, listBatches, loadBatch, saveBatch, totalBatchSize } from './kfile';
 export { reduceStorageSize } from './storageCap';
+export { seedNextBatchNum } from './seedBatchNum';

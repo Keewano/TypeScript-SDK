@@ -1,8 +1,13 @@
 /**
- * Serialize lifecycle teardown mutations so two concurrent shutdowns
- * never interleave their loop-abort / runtime-clear sequences. Each task
- * runs only after the previous one settles; the chain survives a
- * rejecting task so one failure does not wedge every later teardown.
+ * Serialize the lifecycle mutations - boot and teardown alike - so two
+ * of them never interleave their runtime-install / loop-abort /
+ * runtime-clear sequences. Each task runs only after the previous one
+ * settles; the chain survives a rejecting task so one failure does not
+ * wedge every later call.
+ *
+ * Boot belongs on the same chain as teardown, not on one of its own:
+ * the pair that matters is an init racing a shutdown, where the init
+ * would otherwise inspect a runtime the teardown is about to clear.
  */
 let tail: Promise<void> = Promise.resolve();
 

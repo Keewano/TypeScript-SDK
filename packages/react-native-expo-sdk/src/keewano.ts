@@ -18,11 +18,17 @@
 
 import type { KeewanoApi, KeewanoConfig } from '@keewano/react-native-sdk';
 
-import { configureTransportFetch, isTransportFetchConfigured } from '@keewano/core';
+import type { StorageAdapter } from '@keewano/core';
+
+import {
+  MemoryStorageAdapter,
+  configureTransportFetch,
+  isTransportFetchConfigured,
+} from '@keewano/core';
 import { Keewano as BareKeewano } from '@keewano/react-native-sdk';
 
 import { expoPlatformAdapter } from './platform';
-import { ExpoStorageAdapter } from './storage';
+import { ExpoStorageAdapter, StorageUnavailableError } from './storage';
 import { loadExpoFetch } from './transport';
 
 async function init(config: KeewanoConfig): Promise<void> {
@@ -43,12 +49,35 @@ async function init(config: KeewanoConfig): Promise<void> {
   }
   const withExpoDefaults: KeewanoConfig = { ...config };
   if (config.storage === undefined) {
-    withExpoDefaults.storage = new ExpoStorageAdapter();
+    withExpoDefaults.storage = defaultExpoStorage();
   }
   if (config.platform === undefined) {
     withExpoDefaults.platform = expoPlatformAdapter();
   }
   return BareKeewano.init(withExpoDefaults);
+}
+
+/**
+ * Default durable storage with a platform guard: the adapter
+ * constructor throws `StorageUnavailableError` where the environment
+ * cannot host durable files (Expo Web has no document directory, or
+ * `expo-file-system` is not installed). EXACTLY that class
+ * degrades to the in-memory adapter with one warn - events then live
+ * for the page/app session only. Any other constructor failure is a
+ * real bug and rethrows, so a regression cannot masquerade as memory
+ * mode. An explicit `storage` override skips this default entirely.
+ */
+function defaultExpoStorage(): StorageAdapter {
+  try {
+    return new ExpoStorageAdapter();
+  } catch (err: unknown) {
+    if (!(err instanceof StorageUnavailableError)) throw err;
+    console.warn(
+      'Keewano.init: durable storage unavailable on this platform; events will not survive a reload.',
+      err,
+    );
+    return new MemoryStorageAdapter();
+  }
 }
 
 /**

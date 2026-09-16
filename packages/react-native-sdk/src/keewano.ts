@@ -25,6 +25,7 @@ import {
   isByteString,
   uuidToBytes,
   listBatches,
+  seedNextBatchNum,
   loadOrInitConsentState,
   loadOrInitIdentifiers,
   loadTestUserName,
@@ -32,6 +33,7 @@ import {
   markAsTestUser,
   newUuid,
   persistAccumulatedBatch,
+  purgeRevokedData,
   reportABTestGroupAssignment,
   reportAdItemsGranted,
   reportAdOffered,
@@ -282,13 +284,27 @@ async function startInit(config: KeewanoConfig): Promise<void> {
     sendLoopAbort,
     sendLoopPromise: null,
     detachFns: [],
-    nextBatchNum: 0,
+    /**
+     * Seeded from disk, not from zero: an app relaunched with unsent
+     * batches from the prior session would otherwise seal a new batch
+     * onto the same `${batchEndTime}_${batchNum}` path within the same
+     * second and overwrite it, losing everything that file held.
+     */
+    nextBatchNum: await seedNextBatchNum({ storage, dir: BATCHES_DIR }),
     onboardingCounters: new Map<string, number>(),
     preSdkInFlight: null,
     lastSceneName: undefined,
     customEventSet,
   };
   setRuntime(runtime);
+  /**
+   * Refuse collection at the dispatcher, not at the report layer: the
+   * auto-trackers hold the dispatcher directly, so a gate anywhere
+   * above them is one an ordinary button press walks straight past.
+   * Reading the state through a closure rather than copying it means
+   * the gate cannot fall out of step with the consent record.
+   */
+  dispatcher.setCollectionGate(() => consentGate(runtime.consentState) !== 'delete');
   /**
    * Three-step ordering, preserved on the wire:
    *   1. `attachInitialEventsTracker` emits the canonical APP_LAUNCH /
@@ -497,19 +513,10 @@ async function flushOrDropOnShutdown(runtime: SdkRuntime): Promise<void> {
      * The rethrown error propagates to the outer try / finally
      * in shutdown so trackers detach and the runtime clears.
      */
-    let resetError: unknown = null;
-    try {
-      runtime.dispatcher.currentInBatch.resetForReuse();
-    } catch (err: unknown) {
-      resetError = err;
-    }
-    try {
-      runtime.dispatcher.currentSendingBatch.resetForReuse();
-    } catch (err: unknown) {
-      if (resetError === null) resetError = err;
-    }
-    await deleteQueuedBatches(runtime);
-    if (resetError !== null) throw resetError;
+    await purgeRevokedData({
+      dispatcher: runtime.dispatcher,
+      deleteQueued: () => deleteQueuedBatches(runtime),
+    });
     return;
   }
   await persistAccumulatedBatch({
@@ -591,16 +598,13 @@ async function setUserConsent(granted: boolean): Promise<void> {
       await runtime.sendLoopPromise;
     }
     try {
-      runtime.dispatcher.currentInBatch.resetForReuse();
+      await purgeRevokedData({
+        dispatcher: runtime.dispatcher,
+        deleteQueued: () => deleteQueuedBatches(runtime),
+      });
     } catch {
-      /** Best-effort cleanup; disk delete still runs below. */
+      /** Best-effort buffer reset; the disk delete inside the purge handles its own failures. */
     }
-    try {
-      runtime.dispatcher.currentSendingBatch.resetForReuse();
-    } catch {
-      /** Best-effort cleanup; disk delete still runs below. */
-    }
-    await deleteQueuedBatches(runtime);
     /**
      * Do NOT restart the loop here. `Denied` is terminal under the
      * current consent state machine, so a restarted loop would just

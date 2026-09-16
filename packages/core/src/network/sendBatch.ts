@@ -32,6 +32,7 @@ import { uuidBytesToString } from '../encoding/uuid';
 import { LIMITS } from '../encoding/limits';
 import { assertHeaderValue } from './helpers/assertHeaderValue';
 import { CONTENT_TYPE_OCTET_STREAM, ENDPOINT_PATH } from './helpers/constants';
+import { hardenedRequestInit } from './helpers/hardenedRequestInit';
 import { isAbortError } from './helpers/isAbortError';
 import { joinEndpoint } from './helpers/joinEndpoint';
 import { mergeExtraHeaders } from './helpers/mergeExtraHeaders';
@@ -207,7 +208,7 @@ function buildSendBatchHeaders({
  *   not retry a batch the caller asked to stop or timed out.
  */
 async function sendBatch(args: SendBatchArgs): Promise<boolean> {
-  const { baseUrl, apiKey, batch, testUser, signal, extraHeaders } = args;
+  const { baseUrl, apiKey, batch, testUser, signal, extraHeaders, onFailure } = args;
   assertHeaderValue({ value: apiKey, fnName: 'sendBatch', field: 'apiKey', allowEmpty: false });
   if (testUser != null) {
     assertHeaderValue({
@@ -225,40 +226,10 @@ async function sendBatch(args: SendBatchArgs): Promise<boolean> {
   });
   const url = joinEndpoint({ baseUrl, path: ENDPOINT_PATH.IN });
   /**
-   * `signal` is omitted from `RequestInit` when undefined to satisfy
-   * `exactOptionalPropertyTypes: true` - `fetch`'s `signal` is typed
-   * as `AbortSignal | null`, not `AbortSignal | undefined`.
-   *
    * `fetch` accepts `Uint8Array` at runtime as a `BufferSource`, but
    * TS 5.7+ narrows `Uint8Array<ArrayBufferLike>` too strictly against
    * the `BodyInit` union. The cast pins the runtime contract without
    * copying the bytes.
-   */
-  /**
-   * `redirect: 'error'` forces `fetch` to reject on any 3xx
-   * response. The transport carries `K-Token` (the API key) plus
-   * the install / user / data-session UUIDs in headers; default
-   * redirect-following would forward those secrets to whatever URL
-   * the response advertises. Fail closed instead.
-   *
-   * `credentials: 'omit'` suppresses ambient cookies and HTTP
-   * authentication. Authentication is carried exclusively by the
-   * `K-Token` header; letting `fetch` attach the runtime's stored
-   * cookies (or platform-level Basic-Auth) would leak unrelated
-   * session material to the ingress endpoint on every batch.
-   *
-   * `cache: 'no-store'` defeats HTTP cache layers and tells
-   * service workers not to satisfy this request from cache or
-   * write it back. The endpoint URL is the constant `/in`; the
-   * batch identity rides in K-* headers, so a URL-keyed cache
-   * could otherwise replay a previous batch's 2xx response and
-   * make the SDK believe a never-sent batch was delivered.
-   *
-   * `referrerPolicy: 'no-referrer'` suppresses the `Referer`
-   * header that browser-based runtimes (Expo for web) would
-   * otherwise attach with the host app's origin or URL. The
-   * analytics endpoint has no use for that metadata and the host
-   * has not asked us to leak it.
    *
    * After a successful `fetch`, the response body is released via
    * `releaseResponseBody` so the underlying socket returns to the
@@ -266,16 +237,12 @@ async function sendBatch(args: SendBatchArgs): Promise<boolean> {
    * connection busy until GC reclaims the unread body, and under
    * load that backpressure can stall subsequent batch uploads.
    */
-  const init: RequestInit = {
+  const init = hardenedRequestInit({
     method: 'POST',
-    cache: 'no-store',
-    credentials: 'omit',
-    redirect: 'error',
-    referrerPolicy: 'no-referrer',
     headers,
-    body: batch.data as BodyInit,
-    ...(signal === undefined ? {} : { signal }),
-  };
+    body: batch.data as NonNullable<RequestInit['body']>,
+    signal,
+  });
   try {
     const response = await resolveTransportFetch().call(globalThis, url, init);
     /*
@@ -290,6 +257,7 @@ async function sendBatch(args: SendBatchArgs): Promise<boolean> {
      * already accepted the batch).
      */
     const ok = response.ok;
+    if (!ok) onFailure?.(`HTTP ${String(response.status)} from ${url}`);
     try {
       await releaseResponseBody(response);
     } catch {
@@ -300,6 +268,14 @@ async function sendBatch(args: SendBatchArgs): Promise<boolean> {
     if (isAbortError(error)) {
       throw error;
     }
+    /**
+     * The name and message, not the stack: this reaches a host's
+     * console on the one failure a first integration is most likely to
+     * hit, and "which host, and what did it say" is the whole question.
+     * The URL carries no credential - the key travels as a header.
+     */
+    const detail = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+    onFailure?.(`${detail} (${url})`);
     return false;
   }
 }

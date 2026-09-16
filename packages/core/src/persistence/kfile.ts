@@ -54,9 +54,20 @@ import { BATCH_FILE_EXTENSION, batchFilePath, parseBatchFilename } from './helpe
  *   clear diagnostic at the boundary instead of silent byte
  *   corruption.
  */
-async function saveBatch({ storage, dir, codec, batch }: SaveBatchArgs): Promise<number> {
+async function saveBatch({
+  storage,
+  dir,
+  codec,
+  batch,
+  filenameSuffix,
+}: SaveBatchArgs): Promise<number> {
   const bytes = codec.serializeContainer(batch);
-  const path = batchFilePath({ dir, batchEndTime: batch.batchEndTime, batchNum: batch.batchNum });
+  const path = batchFilePath({
+    dir,
+    batchEndTime: batch.batchEndTime,
+    batchNum: batch.batchNum,
+    ...(filenameSuffix === undefined ? {} : { filenameSuffix }),
+  });
   await storage.writeFile({ path, bytes });
   return bytes.length;
 }
@@ -108,7 +119,12 @@ async function listBatches({ storage, dir }: ListBatchesArgs): Promise<BatchFile
    * clock close to a single round-trip even for hundreds of batches.
    * Order is restored by the lexicographic sort below.
    */
-  const parsedEntries: { path: string; batchEndTime: number; batchNum: number }[] = [];
+  const parsedEntries: {
+    path: string;
+    batchEndTime: number;
+    batchNum: number;
+    filenameSuffix?: string;
+  }[] = [];
   for (const basename of names) {
     const parsed = parseBatchFilename(basename);
     if (parsed === null) {
@@ -119,9 +135,11 @@ async function listBatches({ storage, dir }: ListBatchesArgs): Promise<BatchFile
         dir,
         batchEndTime: parsed.batchEndTime,
         batchNum: parsed.batchNum,
+        ...(parsed.filenameSuffix === undefined ? {} : { filenameSuffix: parsed.filenameSuffix }),
       }),
       batchEndTime: parsed.batchEndTime,
       batchNum: parsed.batchNum,
+      ...(parsed.filenameSuffix === undefined ? {} : { filenameSuffix: parsed.filenameSuffix }),
     });
   }
   /**
@@ -149,6 +167,7 @@ async function listBatches({ storage, dir }: ListBatchesArgs): Promise<BatchFile
       batchEndTime: entry.batchEndTime,
       batchNum: entry.batchNum,
       size,
+      ...(entry.filenameSuffix === undefined ? {} : { filenameSuffix: entry.filenameSuffix }),
     });
   }
   out.sort((a, b) => {

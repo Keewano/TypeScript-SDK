@@ -17,9 +17,17 @@ import type { EncodedBatch } from '../../codec/types/codec';
 /**
  * Typed delivery outcome. `reason` is a terse diagnostic for internal
  * logging, never parsed.
+ *
+ * `ok` may carry the server's per-event receipt when the protocol
+ * returns one: `received` events reached the server and `accepted` of
+ * them were taken for processing. The batch is delivered either way -
+ * that is what `ok` means - but a caller that chains deliveries needs
+ * to tell a batch that landed from one the server took nothing out of,
+ * because sending the next batch past it reorders the queue. A
+ * protocol without a receipt omits both fields.
  */
 type TransportResult =
-  | { kind: 'ok' }
+  | { kind: 'ok'; received?: number; accepted?: number }
   | { kind: 'retryable'; reason: string }
   | { kind: 'fatal'; reason: string };
 
@@ -54,10 +62,20 @@ interface TransportSendArgs {
  * A batch delivery protocol. `codecId` names the codec whose payloads
  * this transport understands; the send loop pairs a loaded batch with
  * the transport whose `codecId` matches.
+ *
+ * `sendSync` is the optional exit-path delivery: a hand-off that
+ * completes without the caller awaiting anything, for the one moment
+ * a normal send cannot serve - a browser tab being torn down, where
+ * no promise is guaranteed to resume. It reports only whether the
+ * runtime accepted the payload for delivery, never whether the
+ * server received it, so a caller must keep its persisted copy and
+ * let ordinary delivery resolve the duplicate. Transports without a
+ * fire-and-forget channel simply omit it.
  */
 interface Transport {
   readonly codecId: string;
   send(args: TransportSendArgs): Promise<TransportResult>;
+  sendSync?(args: TransportSendArgs): boolean;
 }
 
 export type { Transport, TransportContext, TransportResult, TransportSendArgs };

@@ -2,10 +2,14 @@
  * Construction options and the filesystem seam for `NodeStorageAdapter`.
  *
  * NodeStorageAdapterArgs:
- *   dataDir - sandbox root that holds every SDK-owned file. Relative
- *     values resolve against the process working directory. Defaults to
- *     `<os.tmpdir()>/keewano`; pass a persistent location so batches
- *     survive process restarts and temp-dir cleanup.
+ *   dataDir - sandbox root that holds every SDK-owned file. Required,
+ *     with no default: a shared one would put two services' queues in
+ *     one directory, and each ships whatever it finds under its own
+ *     project. Relative values resolve against the process working
+ *     directory. Give it a private, persistent location - the same
+ *     across restarts of one service, different per service and per
+ *     replica - so batches survive a restart without being visible to
+ *     anybody else.
  *   fs - advanced seam that injects a `node:fs/promises` stand-in so the
  *     adapter's defensive error branches can be exercised in tests.
  *     Defaults to the real `node:fs/promises`.
@@ -31,8 +35,17 @@ interface NodeFsLike {
   mkdir(path: string, options: { recursive: true }): Promise<string | undefined>;
 }
 
+/**
+ * Arguments for `sweepOrphanedScratchFiles`.
+ *
+ * dir - Adapter-relative directory to sweep.
+ */
+interface SweepScratchArgs {
+  dir: string;
+}
+
 interface NodeStorageAdapterArgs {
-  dataDir?: string;
+  dataDir: string;
   fs?: NodeFsLike;
 }
 
@@ -41,4 +54,4 @@ interface IsErrnoArgs {
   code: string;
 }
 
-export type { IsErrnoArgs, NodeFsLike, NodeStorageAdapterArgs };
+export type { IsErrnoArgs, NodeFsLike, NodeStorageAdapterArgs, SweepScratchArgs };

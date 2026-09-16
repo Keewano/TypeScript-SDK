@@ -25,7 +25,7 @@ import type { KeewanoRuntime } from '../runtime';
 
 import { KEvents } from '../events';
 import { clampInt32NonNegative, clampNonNegativeFloat, clampUint32, clampUint8 } from './clamp';
-import { runWhenReady, truncateString } from './reportHelpers';
+import { nowUnixSec, runWhenReady, truncateErrorMessage, truncateString } from './reportHelpers';
 
 /**
  * Config for the items-granted event. Kept as a local-only type
@@ -71,11 +71,6 @@ function isUsdCentsRevenue(revenue: Revenue): revenue is UsdCentsRevenue {
 function emitTimestampEvent(runtime: KeewanoRuntime, eventId: KEvent, unixSec: number): void {
   runtime.dispatcher.setFrameTimestamp(unixSec);
   runtime.dispatcher.addEventDateTime({ eventId, date: unixSec });
-}
-
-/** Sample current Unix seconds (UTC). Single source of truth for wire timestamps. */
-function nowUnixSec(): number {
-  return Math.floor(Date.now() / 1000);
 }
 
 /**
@@ -405,16 +400,17 @@ function reportGameLanguage(language: string): void {
 }
 
 /**
- * Emit an `ERROR_MSG` event with the full message string. Skips the
- * 256-char truncation that other report methods apply so debug
- * detail survives; the dispatcher's `addEventString` accepts strings
- * of any length already.
+ * Emit an `ERROR_MSG` event. The 256-char truncation other reports
+ * apply is deliberately skipped so a stack survives, but the payload
+ * is still bounded by `truncateErrorMessage`, whose own comment
+ * explains what an unbounded one costs the events batched beside it.
  */
 function logError(message: string): void {
   const ts = nowUnixSec();
+  const bounded = truncateErrorMessage(message);
   runWhenReady((runtime) => {
     runtime.dispatcher.setFrameTimestamp(ts);
-    runtime.dispatcher.addEventString({ eventId: KEvents.ERROR_MSG, str: message });
+    runtime.dispatcher.addEventString({ eventId: KEvents.ERROR_MSG, str: bounded });
   });
 }
 

@@ -11,8 +11,10 @@ import type { NodeKeewanoConfig } from './config';
  * (built at init) and the per-user batch dispatcher (built per
  * `reportUserBatch`).
  *
- * installId - 16-byte non-zero UUID required to construct the dispatcher;
- *   vestigial in relay mode (never shipped or persisted).
+ * installId - 16-byte UUID stamped on the dispatcher's batches; the relay's
+ *   project id, or all-zero when the API key carries none (the dispatcher
+ *   accepts the all-zero server-relay sentinel). Shipped as `K-InstallId`,
+ *   never persisted to disk.
  * userId - 16-byte UUID for this dispatcher. All-zero "no user" marker for
  *   the inert dispatcher; the end user's id for a per-user batch.
  * dataSessionId - 16-byte non-zero session UUID for this run.
@@ -30,15 +32,17 @@ interface BuildDispatcherArgs {
  *
  * config - caller-supplied init config.
  * endpoint - resolved ingress URL.
+ * shutdownGraceMs - resolved teardown drain budget, in milliseconds.
  * storage - resolved storage adapter.
  * dispatcher - the constructed inert send-loop dispatcher.
- * installId - 16-byte vestigial install UUID (see {@link NodeRuntime}).
+ * installId - 16-byte relay install id (see {@link NodeRuntime}).
  * userId - 16-byte all-zero "no user" marker.
  * dataSessionId - 16-byte session UUID for this run.
  */
 interface BuildRuntimeArgs {
   config: NodeKeewanoConfig;
   endpoint: string;
+  shutdownGraceMs: number;
   storage: StorageAdapter;
   dispatcher: KEventDispatcher;
   installId: Uint8Array;

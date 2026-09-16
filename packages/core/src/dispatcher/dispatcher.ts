@@ -11,10 +11,11 @@
  * observe a partially-cleared accumulator.
  *
  * Scope: input validation, frame-timestamp policy, threshold
- * bookkeeping, atomic swap, signal mechanism, and identity setters.
- * Byte encoding and cut placement live in the codec's builder;
- * storage-aware behaviours (custom-event map loading, the send loop,
- * on-disk batch sizing) live in the storage / network layers.
+ * bookkeeping, atomic swap, signal mechanism, persist bookkeeping,
+ * and identity setters. Byte encoding and cut placement live in the
+ * codec's builder; storage-aware behaviours (custom-event map
+ * loading, the send loop, on-disk batch sizing) live in the storage /
+ * network layers.
  *
  * @example
  * ```ts
@@ -82,6 +83,9 @@ class KEventDispatcher {
   private signalTimer: ReturnType<typeof setTimeout> | null;
   private signalPending: boolean;
 
+  private persistEpochCounter: number;
+  private pendingPersistCount: number;
+
   /**
    * When `true`, the idle `waitForSignal` timer is `unref`-ed so a
    * parked send loop never keeps a Node process alive. No-op where the
@@ -89,6 +93,17 @@ class KEventDispatcher {
    * facade passes `true`.
    */
   private readonly unrefTimers: boolean;
+
+  /**
+   * Answers "may this session collect?", or `null` when nothing gates
+   * collection (a relay, or a host that never asked for consent).
+   *
+   * A predicate rather than a flag, because a flag has to be kept in
+   * step with the state it mirrors and this one cannot drift: it reads
+   * the consent state at the moment of the event. Installed by the
+   * platform facade right after the runtime is built.
+   */
+  private collectionGate: (() => boolean) | null;
 
   /**
    * Construct a fresh dispatcher with empty `inBatch` / `sendingBatch`
@@ -163,7 +178,10 @@ class KEventDispatcher {
     this.signalResolver = null;
     this.signalTimer = null;
     this.signalPending = false;
+    this.persistEpochCounter = 0;
+    this.pendingPersistCount = 0;
     this.unrefTimers = unrefTimers;
+    this.collectionGate = null;
   }
 
   /**
@@ -217,7 +235,44 @@ class KEventDispatcher {
    *
    * @param eventId - One of the {@link KEvents} values.
    */
+  /**
+   * Install the predicate that decides whether this session may collect.
+   *
+   * Every event on every platform passes through the emit methods below,
+   * so this is the one place a refusal cannot be walked around. The
+   * report layer is not that place: the auto-trackers hold the
+   * dispatcher directly and never go through it.
+   *
+   * @param gate - Returns `false` while collection is refused.
+   */
+  setCollectionGate(gate: () => boolean): void {
+    this.collectionGate = gate;
+  }
+
+  /**
+   * Is collection refused right now? Drops the event where it is asked,
+   * before any header is resolved or any byte is written, so a refusal
+   * leaves the batch exactly as it was.
+   */
+  private refusesCollection(): boolean {
+    return this.collectionGate !== null && !this.collectionGate();
+  }
+
+  /**
+   * May this session collect? `true` where nothing gates collection.
+   *
+   * The layers above ask before doing work that only makes sense if the
+   * event lands: burning a one-shot marker, advancing a dedup counter,
+   * writing an identifier to disk. Dropping the event here is not
+   * enough on its own - the caller has already had its side effect by
+   * the time the emit is refused.
+   */
+  get collecting(): boolean {
+    return !this.refusesCollection();
+  }
+
   addEvent(eventId: number): void {
+    if (this.refusesCollection()) return;
     const timestamp = this.resolveHeader(eventId);
     this.inBatch.builder.addEvent({ eventId, timestamp });
     this.sendIfNeeded();
@@ -235,6 +290,7 @@ class KEventDispatcher {
    * @param args - Event ID and string payload.
    */
   addEventString({ eventId, str }: AddEventStringArgs): void {
+    if (this.refusesCollection()) return;
     if (typeof str !== 'string') {
       throw new TypeError('addEventString: not a string');
     }
@@ -249,6 +305,7 @@ class KEventDispatcher {
    * @param args - Event ID and uint32 value.
    */
   addEventUint32({ eventId, value }: AddEventNumberArgs): void {
+    if (this.refusesCollection()) return;
     assertIntInRange({
       fnName: 'addEventUint32',
       max: LIMITS.UINT32_MAX,
@@ -267,6 +324,7 @@ class KEventDispatcher {
    * @param args - Event ID, x, and y.
    */
   addEventUint16x2({ eventId, x, y }: AddEventUint16x2Args): void {
+    if (this.refusesCollection()) return;
     assertIntInRange({
       fnName: 'addEventUint16x2 x',
       max: LIMITS.UINT16_MAX,
@@ -293,6 +351,7 @@ class KEventDispatcher {
    * @param args - Event ID and date (JS `Date` or Unix seconds).
    */
   addEventDateTime({ eventId, date }: AddEventDateTimeArgs): void {
+    if (this.refusesCollection()) return;
     const dateUnixSec = typeof date === 'number' ? date : Math.floor(date.getTime() / 1000);
     assertIntInRange({
       fnName: 'addEventDateTime',
@@ -311,6 +370,7 @@ class KEventDispatcher {
    * @param args - Event ID and signed int32 value.
    */
   addEventInt32({ eventId, value }: AddEventNumberArgs): void {
+    if (this.refusesCollection()) return;
     assertIntInRange({
       fnName: 'addEventInt32',
       max: LIMITS.INT32_MAX,
@@ -330,6 +390,7 @@ class KEventDispatcher {
    * @param args - Event ID and boolean.
    */
   addEventBool({ eventId, flag }: AddEventBoolArgs): void {
+    if (this.refusesCollection()) return;
     if (typeof flag !== 'boolean') {
       throw new TypeError('addEventBool: not a boolean');
     }
@@ -345,6 +406,7 @@ class KEventDispatcher {
    * @param args - Event ID and byte value in [0, 255].
    */
   addEventUint8({ eventId, value }: AddEventNumberArgs): void {
+    if (this.refusesCollection()) return;
     assertIntInRange({
       fnName: 'addEventUint8',
       max: 0xff,
@@ -364,6 +426,7 @@ class KEventDispatcher {
    * @param args - Event ID and float value.
    */
   addEventFloat32({ eventId, value }: AddEventNumberArgs): void {
+    if (this.refusesCollection()) return;
     if (typeof value !== 'number' || !Number.isFinite(value)) {
       throw new TypeError('addEventFloat32: not a finite number');
     }
@@ -380,6 +443,7 @@ class KEventDispatcher {
    * @param args - Event ID, pre-truncated string, and byte code.
    */
   addEventStringChar({ eventId, str, charCode }: AddEventStringCharArgs): void {
+    if (this.refusesCollection()) return;
     if (typeof str !== 'string') {
       throw new TypeError('addEventStringChar: not a string');
     }
@@ -403,6 +467,7 @@ class KEventDispatcher {
    * @param args - Event ID, pre-truncated label, normalized items.
    */
   addEventStringItems({ eventId, str, items }: AddEventStringItemsArgs): void {
+    if (this.refusesCollection()) return;
     if (typeof str !== 'string') {
       throw new TypeError('addEventStringItems: not a string');
     }
@@ -419,6 +484,7 @@ class KEventDispatcher {
    * @param args - Event ID, pre-truncated label, normalized sides.
    */
   addEventStringItemsExchange({ eventId, str, from, to }: AddEventStringItemsExchangeArgs): void {
+    if (this.refusesCollection()) return;
     if (typeof str !== 'string') {
       throw new TypeError('addEventStringItemsExchange: not a string');
     }
@@ -555,6 +621,50 @@ class KEventDispatcher {
     }
   }
 
+  // --- persist bookkeeping ---
+
+  /**
+   * Monotonic count of persists started against this dispatcher's
+   * swapped batches. A ship pass samples it before listing the queue
+   * directory: a change by the end of the pass means a persist sealed
+   * new batches while the pass ran, so the listing no longer reflects
+   * the queue and any queue-state report from it would be stale.
+   */
+  get persistEpoch(): number {
+    return this.persistEpochCounter;
+  }
+
+  /**
+   * `true` while a persist has sealed batches whose storage writes
+   * have not finished. A directory listing taken in this window can
+   * miss batches that are already committed to the queue.
+   */
+  get hasPendingPersist(): boolean {
+    return this.pendingPersistCount > 0;
+  }
+
+  /**
+   * Open a persist window: sealed slices of a swapped batch are about
+   * to be written to the queue directory. Two writers share that
+   * queue - the send loop's own tick and a host's direct flush (exit,
+   * shutdown) - and the dispatcher is the only object both hold, so
+   * the window is tracked here for the ship pass to check. Callers
+   * must close the window via {@link notePersistEnd} on every path,
+   * or `hasPendingPersist` sticks and silences queue-state reports
+   * for the rest of the session.
+   */
+  notePersistStart(): void {
+    this.persistEpochCounter += 1;
+    this.pendingPersistCount += 1;
+  }
+
+  /** Close a persist window opened by {@link notePersistStart}. */
+  notePersistEnd(): void {
+    if (this.pendingPersistCount > 0) {
+      this.pendingPersistCount -= 1;
+    }
+  }
+
   // --- identity + test user ---
 
   /**
@@ -580,6 +690,16 @@ class KEventDispatcher {
       value: userId,
       expectedLength: 16,
     });
+    /**
+     * Guarded like the emit methods, and for more than the event: this
+     * also stamps the id onto the in-batch, so running it while
+     * collection is refused would attach the identity of the person who
+     * refused to a batch. The whole call is a no-op instead. It writes
+     * through the builder rather than through `addEvent`, which is why
+     * it needs its own guard - the one place a reader could reasonably
+     * assume was already covered.
+     */
+    if (this.refusesCollection()) return;
 
     const timestamp = this.resolveHeader(KEvents.USER_ID_ASSIGNED);
     this.inBatch.builder.addEvent({ eventId: KEvents.USER_ID_ASSIGNED, timestamp });

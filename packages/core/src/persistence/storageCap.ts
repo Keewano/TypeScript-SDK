@@ -5,17 +5,18 @@
  *
  * When `totalBytes > capBytes`, walk the batches in chronological
  * order (`(batchEndTime, batchNum)`) and rewrite each one larger
- * than {@link BATCH_DROP_THRESHOLD_BYTES} as a tombstone whose
- * payload is a single `BATCH_DROPPED` event (reason
+ * than the active codec's `tombstoneCeilingBytes` as a tombstone
+ * whose payload is a single `BATCH_DROPPED` event (reason
  * `TOO_MANY_UNSENT_EVENTS`) encoded by the active codec. The
  * tombstone keeps the original identity (UserId, DataSessionId,
  * BatchNum, BatchStartTime, BatchEndTime, CustomEventsVersion) so the
  * server can correlate the drop with the session that produced it.
  *
  * Stops as soon as the running total falls at or below `capBytes`.
- * Files already at or below {@link BATCH_DROP_THRESHOLD_BYTES} are
- * skipped because they are already tombstoned (a fresh binary
- * tombstone file is exactly 70 bytes).
+ * Files already at or below the codec's ceiling are skipped as
+ * already tombstoned (a fresh binary tombstone file is exactly
+ * 70 bytes; other codecs declare their own ceiling), so settled
+ * tombstones are never reloaded or re-measured on later passes.
  */
 
 import type { BatchFileInfo } from './types/kfile';
@@ -37,18 +38,11 @@ const TOMBSTONE_PAYLOAD_SIZE = 10;
 
 /**
  * Total on-disk size of a binary tombstoned batch file: header +
- * tombstone payload + footer. Used as the lower bound for the "is
- * this file worth rewriting?" check.
+ * tombstone payload + footer. The reduction loop skips files at or
+ * under the active codec's `tombstoneCeilingBytes`, which for the
+ * binary codec equals this size by construction.
  */
 const TOMBSTONE_FILE_SIZE = KFILE_HEADER_SIZE + TOMBSTONE_PAYLOAD_SIZE + KFILE_FOOTER_SIZE;
-
-/**
- * Files at or below this size are skipped during reduction. A fresh
- * binary tombstone is exactly {@link TOMBSTONE_FILE_SIZE} = 70 bytes,
- * so any file at or under 70 is already a tombstone (or smaller) and
- * would not free meaningful disk space on rewrite.
- */
-const BATCH_DROP_THRESHOLD_BYTES = TOMBSTONE_FILE_SIZE;
 
 /**
  * Replace `original` with a tombstone batch carrying the same
@@ -145,7 +139,20 @@ async function tombstoneOne(args: ReduceStorageSizeArgs, entry: BatchFileInfo): 
   if (newSize >= entry.size) {
     return 0;
   }
-  await saveBatch({ storage, dir, codec, batch: tombstone });
+  /**
+   * The suffix must ride along: `saveBatch` derives its path from the
+   * batch identity plus this discriminator, and dropping it would
+   * write the tombstone NEXT TO the oversized file instead of over it
+   * - the directory would grow while the accounting claimed it
+   * shrank, forever.
+   */
+  await saveBatch({
+    storage,
+    dir,
+    codec,
+    batch: tombstone,
+    ...(entry.filenameSuffix === undefined ? {} : { filenameSuffix: entry.filenameSuffix }),
+  });
   return newSize - entry.size;
 }
 
@@ -190,7 +197,7 @@ async function reduceStorageSize(args: ReduceStorageSizeArgs): Promise<number> {
     if (total <= capBytes) {
       break;
     }
-    if (entry.size <= BATCH_DROP_THRESHOLD_BYTES) {
+    if (entry.size <= args.codec.tombstoneCeilingBytes) {
       continue;
     }
     const delta = await tombstoneOne(args, entry);
@@ -199,10 +206,4 @@ async function reduceStorageSize(args: ReduceStorageSizeArgs): Promise<number> {
   return total;
 }
 
-export {
-  BATCH_DROP_THRESHOLD_BYTES,
-  TOMBSTONE_FILE_SIZE,
-  TOMBSTONE_PAYLOAD_SIZE,
-  buildTombstoneBatch,
-  reduceStorageSize,
-};
+export { TOMBSTONE_FILE_SIZE, TOMBSTONE_PAYLOAD_SIZE, buildTombstoneBatch, reduceStorageSize };

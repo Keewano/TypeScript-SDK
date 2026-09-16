@@ -16,4 +16,9 @@ export type { LoadOrInitConsentStateArgs, SetConsentArgs } from './types/consent
 export { CONSENT_FILE_SIZE, CONSENT_FILENAME } from './helpers/constants';
 export { ConsentState } from './consentState';
 export { consentGate } from './consentGate';
-export { loadOrInitConsentState, setConsent } from './consentStateMachine';
+export {
+  decodeConsentState,
+  loadOrInitConsentState,
+  readConsentState,
+  setConsent,
+} from './consentStateMachine';

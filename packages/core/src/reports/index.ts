@@ -13,9 +13,11 @@ export {
   clampUint8,
 } from './clamp';
 export {
+  MAX_ERROR_MESSAGE_BYTES,
   MAX_STRING_LENGTH,
   runWhenReady,
   runWhenReadyAsync,
+  truncateErrorMessage,
   truncateString,
 } from './reportHelpers';
 export { formatErrorMessage } from './formatError';
@@ -55,6 +57,7 @@ export {
   reportSubscriptionRevenue,
 } from './monetization';
 export { reportCustomEvent } from './customEvents';
+export { reportButtonClick, reportWindowClose, reportWindowOpen } from './ui';
 export {
   getInstallId,
   markAsTestUser,

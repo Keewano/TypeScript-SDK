@@ -25,6 +25,7 @@ import type {
   RNFSDirEntry,
   RNFSLike,
   RNFSStatResult,
+  ScratchOrphan,
 } from './types/nativeStorageAdapter';
 
 import {
@@ -43,6 +44,7 @@ import {
   generateOpId,
   globToRegex,
   isScratchSibling,
+  parseScratchSibling,
   validPath,
 } from '@keewano/core';
 
@@ -102,14 +104,12 @@ class BareRNStorageAdapter implements StorageAdapter {
   private readonly rootDir: string;
   private readonly rnfs: RNFSLike;
   private readonly mutations: MutationCoordinator;
+  /** Orphan-sweep promise, kicked lazily by the first mutation; `null` until then. */
+  private scratchSweepDone: Promise<void> | null = null;
 
   /**
-   * Construct an adapter bound to the host's React Native runtime
-   * modules. The native bindings are loaded lazily so a host that
-   * imports the adapter without instantiating it pays no startup cost.
-   *
-   * @param args - Optional sandbox root override and a DI hook for
-   *   `react-native-fs`. Pass a mock in tests.
+   * Native bindings are loaded lazily so a host that imports the
+   * adapter without instantiating it pays no startup cost.
    */
   constructor(args: BareRNStorageAdapterArgs = {}) {
     if (args.rootDir?.length === 0) {
@@ -119,11 +119,7 @@ class BareRNStorageAdapter implements StorageAdapter {
     const rnfs = args.rnfs ?? loadRNFS();
 
     if (args.rootDir === undefined && !rnfs.DocumentDirectoryPath) {
-      /**
-       * Hard-fail when the native runtime does not expose a document
-       * directory: the default `${undefined}/keewano` would otherwise
-       * turn into an invalid sandbox root.
-       */
+      // Hard-fail: the default root would otherwise become an invalid "undefined/keewano".
       throw new Error('BareRNStorageAdapter: DocumentDirectoryPath unavailable');
     }
     /**
@@ -132,9 +128,7 @@ class BareRNStorageAdapter implements StorageAdapter {
      * default `DocumentDirectoryPath` the same way as an explicit
      * override so a trailing slash or Windows backslash never produces
      * two different strings for the same on-disk directory and split
-     * the shared mutation queue. The trailing-slash strip uses an
-     * explicit loop instead of `/\/+$/` so SAST tools cannot flag it
-     * as backtracking-sensitive.
+     * the shared mutation queue.
      */
     const baseRoot = (args.rootDir ?? rnfs.DocumentDirectoryPath).replaceAll('\\', '/');
     const normalizedBase = stripTrailingSlashes(baseRoot);
@@ -172,6 +166,103 @@ class BareRNStorageAdapter implements StorageAdapter {
   }
 
   /**
+   * Start the orphan sweep on first use and share the one promise
+   * afterwards. Kicked lazily from the mutation gates rather than the
+   * constructor, so constructing an adapter performs no I/O and no
+   * async work a constructor cannot await.
+   */
+  private ensureScratchSweep(): Promise<void> {
+    this.scratchSweepDone ??= this.sweepOrphanedScratch();
+    return this.scratchSweepDone;
+  }
+
+  /**
+   * One-shot crash recovery for scratch siblings an interrupted
+   * mutation left behind. A `tmp` orphan holds an incomplete write
+   * and a `del` orphan is a trash-renamed file mid-delete - both are
+   * dropped. A `bak` orphan can hold the ONLY copy of the destination
+   * (crash after the rename-aside, before the commit landed), so it
+   * is moved back when the destination is missing and dropped
+   * otherwise. Orphans match no batch filename pattern and are
+   * invisible to the storage cap, so without this pass a crash-prone
+   * install accumulates them unboundedly. Each candidate resolves
+   * under its destination's mutation key (another live instance
+   * sharing the root cannot interleave) and every adapter operation
+   * gates on the sweep, so this instance can neither race it nor
+   * observe pre-recovery contents. Best-effort throughout: a failed
+   * step never breaks the adapter.
+   */
+  private async sweepOrphanedScratch(): Promise<void> {
+    let orphans: ScratchOrphan[];
+    try {
+      orphans = await this.collectScratchOrphans(this.rootDir);
+    } catch {
+      /** Missing root (fresh install) or an unreadable dir - nothing to sweep. */
+      return;
+    }
+    for (const orphan of orphans) {
+      try {
+        await this.mutations.run({
+          key: orphan.destination,
+          op: () => this.resolveScratchOrphan(orphan),
+        });
+      } catch {
+        /** One stubborn orphan must not abort the rest of the sweep. */
+      }
+    }
+  }
+
+  /** Recursively list scratch-named files under `dir` with their destinations. */
+  private async collectScratchOrphans(dir: string): Promise<ScratchOrphan[]> {
+    const entries = await this.rnfs.readDir(dir);
+    const out: ScratchOrphan[] = [];
+    for (const entry of entries) {
+      const entryPath = `${dir}/${entry.name}`;
+      if (entry.isDirectory()) {
+        try {
+          out.push(...(await this.collectScratchOrphans(entryPath)));
+        } catch {
+          /** A single bad subtree must not abort recovery elsewhere. */
+        }
+        continue;
+      }
+      const parsed = parseScratchSibling(entry.name);
+      if (parsed !== null) {
+        out.push({
+          scratchPath: entryPath,
+          destination: `${dir}/${parsed.destinationName}`,
+          kind: parsed.kind,
+        });
+      }
+    }
+    return out;
+  }
+
+  /** Drop a `tmp`/`del` orphan; restore a `bak` orphan whose destination is gone, drop it otherwise. */
+  private async resolveScratchOrphan(orphan: ScratchOrphan): Promise<void> {
+    if (orphan.kind !== 'bak') {
+      await this.bestEffortUnlink(orphan.scratchPath);
+      return;
+    }
+    let destinationExists: boolean;
+    try {
+      destinationExists = await this.rnfs.exists(orphan.destination);
+    } catch {
+      /** Cannot classify - keep the backup rather than risk dropping the only copy. */
+      return;
+    }
+    if (destinationExists) {
+      await this.bestEffortUnlink(orphan.scratchPath);
+      return;
+    }
+    try {
+      await this.rnfs.moveFile(orphan.scratchPath, orphan.destination);
+    } catch {
+      /** Restore is best-effort; the next session's sweep retries. */
+    }
+  }
+
+  /**
    * Bytes are base64-encoded (react-native-fs's `writeFile` is
    * string-only) and routed through a per-operation scratch sibling
    * moved into place via `moveFile`. See the class-level JSDoc for
@@ -182,40 +273,27 @@ class BareRNStorageAdapter implements StorageAdapter {
    * `${fullPath}.tmp` or `${fullPath}.bak` cannot collide with our
    * scratch state: serialization protects only the destination path,
    * not arbitrary suffixes a caller might already be using.
-   *
-   * @param args - Adapter-relative path and binary contents.
    */
   async writeFile({ path, bytes }: WriteFileArgs): Promise<void> {
     if (!(bytes instanceof Uint8Array)) {
       throw new TypeError('writeFile: not a Uint8Array');
     }
     validPath({ path, fnName: 'writeFile' });
+    /** Mutations wait for the orphan sweep so it cannot race a live scratch sibling. */
+    await this.ensureScratchSweep();
     const fullPath = resolveUnderRoot({ rootDir: this.rootDir, relativePath: path });
-    /**
-     * `opId` is a uniqueness suffix, NOT a security token. The
-     * mutation queue prevents two live writes sharing the same
-     * destination; the shared helper prefers `crypto.getRandomValues`
-     * so SAST tools stop flagging `Math.random`.
-     */
+    // opId is a uniqueness suffix, NOT a security token; the mutation queue prevents two live writes sharing the same destination.
     const opId = generateOpId();
     const tmpPath = `${fullPath}.${SCRATCH_TMP_INFIX}.${opId}`;
     const backupPath = `${fullPath}.${SCRATCH_BAK_INFIX}.${opId}`;
 
-    /**
-     * Serialize concurrent writes to the same logical path so two
-     * overlapping calls cannot stomp each other mid-flight.
-     */
+    // Serialize concurrent writes to the same logical path.
     await this.mutations.run({
       key: fullPath,
       op: () => this.doWriteFile(tmpPath, fullPath, backupPath, bytes),
     });
   }
 
-  /**
-   * Full write pipeline: prepare parent, stage to `.tmp`, swap the
-   * existing destination aside to `.bak`, commit the tmp into place
-   * (restoring from backup if the final move fails), and clean up.
-   */
   private async doWriteFile(
     tmpPath: string,
     fullPath: string,
@@ -239,6 +317,11 @@ class BareRNStorageAdapter implements StorageAdapter {
    * so a failed move of the tmp file can be undone. Returns `true`
    * when a backup was made. Throws when the destination resolves to a
    * directory.
+   *
+   * `backupPath` carries this operation's own opId, so nothing can
+   * already occupy it and it is never pre-cleaned here: a crashed
+   * prior run's backup lives under a different opId and is reclaimed
+   * by the launch-time orphan sweep instead.
    */
   private async moveExistingToBackup(fullPath: string, backupPath: string): Promise<boolean> {
     /**
@@ -299,11 +382,6 @@ class BareRNStorageAdapter implements StorageAdapter {
     if (latest.isDirectory()) {
       throw new Error('writeFile: destination path is a directory');
     }
-    /**
-     * Clear any stale backup left by a crashed prior run before
-     * staging the new one.
-     */
-    await this.bestEffortUnlink(backupPath);
     /**
      * Race-recover moveFile failures via the shared helper so a
      * concurrent removal mid-rename preserves the original error if
@@ -463,6 +541,8 @@ class BareRNStorageAdapter implements StorageAdapter {
    */
   async readFile({ path }: ReadFileArgs): Promise<Uint8Array | null> {
     validPath({ path, fnName: 'readFile' });
+    /** Reads wait for the sweep too: a cold start must never observe pre-recovery contents. */
+    await this.ensureScratchSweep();
     const fullPath = resolveUnderRoot({ rootDir: this.rootDir, relativePath: path });
 
     let b64: string;
@@ -522,6 +602,8 @@ class BareRNStorageAdapter implements StorageAdapter {
    */
   async deleteFile({ path }: DeleteFileArgs): Promise<void> {
     validPath({ path, fnName: 'deleteFile' });
+    /** Mutations wait for the orphan sweep so it cannot race a live scratch sibling. */
+    await this.ensureScratchSweep();
     const fullPath = resolveUnderRoot({ rootDir: this.rootDir, relativePath: path });
 
     /**
@@ -765,6 +847,8 @@ class BareRNStorageAdapter implements StorageAdapter {
    */
   async listFiles({ dir, pattern }: ListFilesArgs): Promise<string[]> {
     validPath({ path: dir, fnName: 'listFiles' });
+    /** Reads wait for the sweep too: a cold start must never observe pre-recovery contents. */
+    await this.ensureScratchSweep();
     const fullDir = resolveUnderRoot({ rootDir: this.rootDir, relativePath: dir });
     /**
      * Route the initial probe through `recoverMissingOrRethrow` so a
@@ -861,6 +945,8 @@ class BareRNStorageAdapter implements StorageAdapter {
    */
   async fileSize({ path }: FileSizeArgs): Promise<number | null> {
     validPath({ path, fnName: 'fileSize' });
+    /** Reads wait for the sweep too: a cold start must never observe pre-recovery contents. */
+    await this.ensureScratchSweep();
     const fullPath = resolveUnderRoot({ rootDir: this.rootDir, relativePath: path });
 
     let stat: RNFSStatResult;

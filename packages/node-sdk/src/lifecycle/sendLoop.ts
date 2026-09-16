@@ -15,6 +15,7 @@ import { ConsentState, runSendLoop } from '@keewano/core';
 
 import { allocBatchNum } from '../runtime';
 import { BATCHES_DIR } from './helpers/constants';
+import { notifyPass } from './helpers/passTicker';
 
 /**
  * Build and start the send loop against `runtime`. The loop's helpers
@@ -32,6 +33,14 @@ function startSendLoop(runtime: NodeRuntime): void {
     getNextBatchNum: () => allocBatchNum(runtime),
     signal: runtime.sendLoopAbort.signal,
     batchesDir: BATCHES_DIR,
+    /**
+     * Every boundary, not only a completed ship pass: the drain gives up
+     * on a queue that could not ship rather than waiting out its grace.
+     * The depth comes from disk. See passTicker.
+     */
+    onPassEnd: () => {
+      notifyPass(runtime);
+    },
     ...(runtime.customEventSet === undefined ? {} : { customEventSet: runtime.customEventSet }),
     ...(runtime.config.getExtraHeaders === undefined
       ? {}

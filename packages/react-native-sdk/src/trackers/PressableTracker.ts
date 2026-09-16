@@ -19,8 +19,14 @@
 import type { KeewanoTracker } from '../types/config';
 
 import type { WrappedTouchable } from './pressableWrapper';
-import type { PatchedSlot, PressableTrackerArgs } from './types/PressableTracker';
+import type {
+  PatchedSlot,
+  PressableTrackerArgs,
+  ResolveDispatcher,
+} from './types/PressableTracker';
 import type { RnApi } from './types/rn';
+
+import { getRuntimeOrNull } from '../runtime';
 
 import { defaultLoadRn } from './loadRn';
 import { noopDetach } from './noopDetach';
@@ -62,6 +68,24 @@ interface DefineSlotArgs {
 }
 
 /**
+ * Args for the private `patchTouchables` helper. Local for the same
+ * reason as {@link DefineSlotArgs}: one private consumer, and the
+ * shape leans on the impl-local `TouchableSlots` alias.
+ *
+ * slots - Writable view of the touchable namespace.
+ * resolveDispatcher - Passed straight to every wrapper the loop builds.
+ */
+interface PatchTouchablesArgs {
+  slots: TouchableSlots;
+  resolveDispatcher: ResolveDispatcher;
+}
+
+/** The live session's dispatcher; `null` before init and after shutdown. */
+function defaultResolveDispatcher(): ReturnType<ResolveDispatcher> {
+  return getRuntimeOrNull()?.dispatcher ?? null;
+}
+
+/**
  * Install `value` into a touchable slot via `defineProperty`. The
  * `react-native` namespace exposes each Touchable as a configurable
  * getter-only accessor (Babel / Metro ESM interop), so a plain
@@ -85,7 +109,7 @@ class PressableTracker implements KeewanoTracker {
 
   private readonly args: PressableTrackerArgs;
 
-  constructor(args: PressableTrackerArgs) {
+  constructor(args: PressableTrackerArgs = {}) {
     this.args = args;
   }
 
@@ -107,7 +131,10 @@ class PressableTracker implements KeewanoTracker {
     /** `== null` so a custom `loadRn` returning `null` degrades the same as `undefined`. */
     if (rn == null) return noopDetach;
     const slots = rn as unknown as TouchableSlots;
-    const originals = patchTouchables(slots, this.args.dispatcher);
+    const originals = patchTouchables({
+      slots,
+      resolveDispatcher: this.args.resolveDispatcher ?? defaultResolveDispatcher,
+    });
     return () => restoreTouchables(slots, originals);
   }
 }
@@ -120,10 +147,10 @@ class PressableTracker implements KeewanoTracker {
  * is wrapped in try/catch so a non-configurable slot does not abort
  * the loop and orphan an already-installed wrapper.
  */
-function patchTouchables(
-  slots: TouchableSlots,
-  dispatcher: PressableTrackerArgs['dispatcher'],
-): Map<TouchableKey, PatchedSlot> {
+function patchTouchables({
+  slots,
+  resolveDispatcher,
+}: PatchTouchablesArgs): Map<TouchableKey, PatchedSlot> {
   const originals = new Map<TouchableKey, PatchedSlot>();
   for (const key of TOUCHABLE_KEYS) {
     const Original = slots[key];
@@ -139,7 +166,11 @@ function patchTouchables(
        * does not abort the loop and orphan an already-installed wrapper
        * for the other keys.
        */
-      const Wrapped = buildPressableWrapper(Original, key, dispatcher);
+      const Wrapped = buildPressableWrapper({
+        original: Original,
+        componentLabel: key,
+        resolveDispatcher,
+      });
       defineSlot({ slots, key, value: Wrapped });
       originals.set(key, { original: Original, wrapped: Wrapped });
     } catch (err: unknown) {
