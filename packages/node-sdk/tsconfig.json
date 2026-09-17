@@ -3,6 +3,7 @@
   "exclude": ["dist", "node_modules"],
   "include": ["src/**/*", "package.json"],
   "compilerOptions": {
+    "rootDir": ".",
     "outDir": "./dist",
     "types": ["jest", "node"]
   }

@@ -17,6 +17,12 @@ module.exports = {
    * matches the scope suffix, e.g. `@keewano/core` -> `packages/core`.
    */
   moduleNameMapper: {
+    /**
+     * The codegen is a published dependency, not a workspace package: the
+     * generic rule below would send it to a packages/codegen that no longer
+     * exists, so it is resolved from node_modules first.
+     */
+    '^@keewano/codegen$': '<rootDir>/node_modules/@keewano/codegen',
     '^@keewano/(.+)$': '<rootDir>/packages/$1/src/index.ts',
   },
   moduleFileExtensions: ['ts', 'tsx', 'js', 'json'],

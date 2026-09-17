@@ -212,14 +212,13 @@ behaves exactly as it does on the device SDKs - follow the linked guide and read
 
 ## 5. Custom events
 
-Create a `keewano-custom-events/` directory next to your source, then generate a typed
-schema with `@keewano/codegen`, targeting the Node relay. The generator reads that
-directory and never creates it:
+Declare your events with `@keewano/codegen` - the first `add` creates
+`keewano.events.json` in the directory you run it from - then generate a typed schema
+targeting the Node relay, with `--code` naming the directory the module is written into:
 
 ```bash
-mkdir keewano-custom-events
-npx keewano-codegen add BestScore --type uint
-npx keewano-codegen --target node
+npx @keewano/codegen add BestScore --type uint
+npx @keewano/codegen --target node --code src/analytics
 ```
 
 Pass the generated `customEventSet` to `init` (the send loop registers it once per session,
@@ -228,7 +227,7 @@ before the first batch ships), then emit through the generated wrappers - or
 
 ```typescript
 import { Keewano } from '@keewano/node-sdk';
-import { customEventSet, reportBestScore } from './keewano-custom-events/keewano-events.generated';
+import { customEventSet, reportBestScore } from './src/analytics/keewano-events.generated';
 
 await Keewano.init({ apiKey: '...', dataDir: '/var/lib/my-service/keewano', customEventSet });
 await Keewano.reportUserBatch({

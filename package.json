@@ -1,6 +1,6 @@
 {
   "name": "keewano-ts-workspace",
-  "version": "1.1.0-179",
+  "version": "1.2.0-186",
   "private": true,
   "description": "React Native + Expo SDK for Keewano AI Analyst - workspace root",
   "workspaces": [
@@ -21,6 +21,7 @@
     "verify:packed": "node scripts/verifyPackedRanges.cjs"
   },
   "devDependencies": {
+    "@keewano/codegen": "1.0.1-105",
     "@types/jest": "29.5.14",
     "@typescript-eslint/eslint-plugin": "8.46.4",
     "@typescript-eslint/parser": "8.46.4",
@@ -38,7 +39,7 @@
     "zod@3.25.76": "4.4.3",
     "uuid@7.0.3": "11.1.1",
     "ws": "^8.21.0",
-    "fast-uri": "3.1.5",
+    "fast-uri": "3.1.8",
     "brace-expansion": "5.0.9",
     "js-yaml": "4.3.2",
     "nanoid": "3.3.18",

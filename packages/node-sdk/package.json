@@ -1,6 +1,6 @@
 {
   "name": "@keewano/node-sdk",
-  "version": "1.1.0-179",
+  "version": "1.2.0-186",
   "description": "Keewano analytics SDK for Node.js services and processes; built on @keewano/core.",
   "main": "./dist/src/index.js",
   "types": "./dist/src/index.d.ts",
@@ -42,7 +42,7 @@
   "homepage": "https://github.com/Keewano/TypeScript-SDK#readme",
   "bugs": "https://github.com/Keewano/TypeScript-SDK/issues",
   "dependencies": {
-    "@keewano/core": "^1.1.0-179",
+    "@keewano/core": "^1.2.0-186",
     "@types/node": ">=20"
   },
   "license": "MIT"

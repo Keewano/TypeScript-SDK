@@ -8,16 +8,43 @@
 type CustomEventValue = string | number | boolean | Date | { x: number; y: number };
 
 /**
- * Args for `reportCustomEvent`.
+ * Args for `reportCustomEvent` naming the event.
  *
  * name - The custom event name as declared in the `customEventSet`
  *   passed to `Keewano.init`.
+ * id - never; use `ReportCustomEventById` to report by wire id.
  * value - Payload matching the event's declared type; omit for a
  *   `None`-typed event.
  */
-interface ReportCustomEventArgs {
+interface ReportCustomEventByName {
   name: string;
+  id?: never;
   value?: CustomEventValue;
 }
 
-export type { CustomEventValue, ReportCustomEventArgs };
+/**
+ * Args for `reportCustomEvent` carrying the event's wire id.
+ *
+ * id - The wire id the generated module carries for the event.
+ * name - never; use `ReportCustomEventByName` to report by name.
+ * value - Payload matching the event's declared type; omit for a
+ *   `None`-typed event.
+ */
+interface ReportCustomEventById {
+  id: number;
+  name?: never;
+  value?: CustomEventValue;
+}
+
+/**
+ * Args for `reportCustomEvent`: the event's name or its wire id, plus
+ * the payload.
+ */
+type ReportCustomEventArgs = ReportCustomEventByName | ReportCustomEventById;
+
+export type {
+  CustomEventValue,
+  ReportCustomEventArgs,
+  ReportCustomEventById,
+  ReportCustomEventByName,
+};

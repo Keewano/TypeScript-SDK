@@ -8,30 +8,29 @@ calls honest.
 
 ## The workflow
 
-1. Create a `keewano-custom-events/` directory next to your source. The generator reads
-   it and never creates it, so that a mistyped `--input` cannot quietly start a second
-   set of definitions.
-2. Declare each event with `@keewano/codegen`. It writes one definition file per event
-   into that directory, picking the id and keeping the filename and the declared name
-   in step.
-3. Run the generator. It produces a module that exports a `customEventSet` plus a typed
-   helper per event.
-4. Pass `customEventSet` to `init`, and call the generated helpers.
+1. Declare each event with `@keewano/codegen`. `add` appends an entry to
+   `keewano.events.json` in the directory you run it from, creating the file on first
+   use; an event's id is 2500 plus its position in that file, so new events go at the end
+   and existing ones are never reordered.
+2. Run the generator with `--code` naming the directory the module goes in. It writes
+   `keewano-events.generated.ts` there, exporting a `customEventSet` plus a typed helper
+   per event.
+3. Pass `customEventSet` to `init`, and call the generated helpers.
 
 ```bash
-mkdir keewano-custom-events
-npx keewano-codegen add GameScore --type uint
-npx keewano-codegen --target expo
+npx @keewano/codegen add GameScore --type uint
+npx @keewano/codegen add GameOver --type none
+npx @keewano/codegen --target expo --code src/analytics
 ```
 
 Set `--target` to match your SDK: `react-native` (default), `expo`, `node`, or `web`. The
 same tool generates Kotlin, Swift and Python from the same definitions. See the
-[Codegen Reference](codegen.md) for the commands, the event JSON format, payload types,
-CLI flags, and generated output.
+[Codegen Reference](codegen.md) for the targets and the generated output, and for links
+to the tool's own reference (definitions file, commands, options).
 
 ```typescript
 import { Keewano } from '@keewano/react-native-expo-sdk';
-import { customEventSet, reportGameScore, reportGameOver } from '../keewano-custom-events/keewano-events.generated';
+import { customEventSet, reportGameScore, reportGameOver } from './src/analytics/keewano-events.generated';
 
 Keewano.init({ apiKey: '...', customEventSet });
 
@@ -53,17 +52,17 @@ reportGameOver();
 
 ## Value types
 
-Each custom event carries one typed value. The available types:
+Each custom event carries one typed value. The first column is what `add --type` takes:
 
-| Type | Use for |
-|---|---|
-| None | a bare marker with no payload (e.g. `GameOver`) |
-| String | text (e.g. a level name) |
-| UnsignedInt | a non-negative whole number (e.g. a score) |
-| Bool | a true / false flag |
-| Timestamp | a point in time |
-| UnsignedShortVec2 | a pair of small numbers (e.g. an `x, y` grid cell) |
-| PriceInUSDCents | a price expressed in USD cents |
+| `--type` | Type | Use for |
+|---|---|---|
+| `none` | None | a bare marker with no payload (e.g. `GameOver`) |
+| `string` | String | text (e.g. a level name) |
+| `uint` | UnsignedInt | a non-negative whole number (e.g. a score) |
+| `bool` | Bool | a true / false flag |
+| `timestamp` | Timestamp | a point in time |
+| `ushortvec2` | UnsignedShortVec2 | a pair of small numbers (e.g. an `x, y` grid cell) |
+| `price_usd_cent` | PriceInUSDCents | a price expressed in USD cents |
 
 > [!IMPORTANT]
 > Numeric custom-event payloads are range-checked, not clamped. A negative, fractional,
@@ -84,9 +83,11 @@ example from dynamic code), use `reportCustomEvent` - it resolves the name again
 Keewano.reportCustomEvent({ name: 'GameScore', value: 13050 });
 ```
 
+The same call accepts the event's wire id instead of the name: `{ id: 2500, value: 13050 }`.
+
 > [!NOTE]
 > `reportCustomEvent` no-ops with a logged reason if `init` got no `customEventSet`, or
-> if the name is not in it. The typed helpers prevent both at compile time, which is
+> if the name or id is not in it. The typed helpers prevent both at compile time, which is
 > why they are preferred.
 
 ---

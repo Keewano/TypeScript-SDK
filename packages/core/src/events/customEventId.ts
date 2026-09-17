@@ -1,12 +1,10 @@
 /**
  * The wire id of one entry in a generated set.
  *
- * The id belongs to the event, not to its place in the list: it is
- * written by hand in the definition file and stays with the event
- * whatever is added or removed around it, so a set may skip numbers.
- * Reading it back off the position would then hand every entry after a
- * gap the id of its neighbour, and both the events reported at runtime
- * and the map registered with the backend would name the wrong thing.
+ * The generator assigns each event's id from its position in the
+ * definitions file - the first event gets the custom-event base - and
+ * carries it per entry in the generated module; `remove` renumbers
+ * every later event, so a generated set is contiguous.
  *
  * The position is still the answer for a set generated before the id
  * was carried in readable form. Those were emitted from a list whose

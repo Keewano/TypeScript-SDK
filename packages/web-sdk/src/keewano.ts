@@ -224,13 +224,13 @@ function sanitizeCustomEventDefs(entries: ReadonlyArray<unknown>): CustomEventDe
       return null;
     }
     /**
-     * The id is the entry's own, not its position: ids are allocated
-     * once and a removed event leaves a hole, so the two stop agreeing
-     * after the first `remove`. Copying it is what keeps a report on
-     * the id the map was built with; dropping it sends the event under
-     * whichever name sits at that index instead. Absent is legitimate -
-     * a set built before ids were declared - and the runtime then falls
-     * back to the position itself.
+     * The id is the entry's own, not its position: the generator writes
+     * it per entry, and the sanitizer copies the id it wrote. Copying it
+     * is what keeps a report on the id the map was built with; dropping
+     * it sends the event under whichever name sits at that index
+     * instead. Absent is legitimate - a module generated before ids
+     * were emitted - and the runtime then falls back to the position
+     * itself.
      *
      * Only the shape is checked here. Whether the number fits the wire
      * field is the encoder's to say, and it says it naming that field.

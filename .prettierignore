@@ -2,3 +2,4 @@ node_modules
 dist
 coverage
 package-lock.json
+packages/*/src/__tests__/codegen/keewano-events.generated.ts

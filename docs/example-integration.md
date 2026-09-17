@@ -72,21 +72,24 @@ Keewano.reportOnboardingMilestone('TutorialComplete');
 
 ## 5. Add a custom event
 
-Declare your own events, generate typed helpers, and call them. `--target expo` matches
-the package installed above; the default target generates against
+Declare your own events, generate typed helpers, and call them. The first `add` creates
+`keewano.events.json`; `--code` names the directory the generated module is written into.
+`--target expo` matches the package installed above; the default target generates against
 `@keewano/react-native-sdk` instead:
 
 ```bash
-mkdir keewano-custom-events
-npx keewano-codegen add GameScore --type uint
-npx keewano-codegen --target expo
+npx @keewano/codegen add GameScore --type uint
+npx @keewano/codegen --target expo --code src/analytics
 ```
 
-```typescript
-import { customEventSet, reportGameScore } from '../keewano-custom-events/keewano-events.generated';
+The generated set is passed to `init`, and the SDK initialises only once (a second call
+is ignored), so replace the `init` call from step 1 with one that passes it:
 
-// pass the schema at init
-Keewano.init({ apiKey: '...', customEventSet });
+```typescript
+import { customEventSet, reportGameScore } from './src/analytics/keewano-events.generated';
+
+// in App(), replacing the init call from step 1
+void Keewano.init({ apiKey: 'your-project-api-key', customEventSet });
 
 // report it anywhere, fully typed
 reportGameScore(13050);

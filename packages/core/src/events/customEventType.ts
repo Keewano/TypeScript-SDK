@@ -50,12 +50,13 @@ const CUSTOM_EVENT_BASE = 2500;
 /**
  * Lowest id a custom event may claim.
  *
- * Everything below belongs to the built-in events, and an id is written
- * by hand in a definition file, so a typo or a hand-built set can name
- * one of them. Nothing downstream would notice: the id travels as the
- * event id, and a custom payload filed under a built-in number is
- * indistinguishable from the real thing once it is on the wire. The
- * server draws the same line and says so when it refuses a map.
+ * Everything below belongs to the built-in events. The generator never
+ * assigns one, but a hand-built set or an edited generated module can
+ * declare an id below the range and name one of them. Nothing
+ * downstream would notice: the id travels as the event id, and a
+ * custom payload filed under a built-in number is indistinguishable
+ * from the real thing once it is on the wire. The server draws the
+ * same line and says so when it refuses a map.
  */
 const CUSTOM_EVENT_MIN_ID = 2000;
 

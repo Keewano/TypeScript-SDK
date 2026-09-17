@@ -60,5 +60,10 @@ module.exports = {
       },
     },
   ],
-  ignorePatterns: ['dist/', 'node_modules/', 'coverage/'],
+  ignorePatterns: [
+    'dist/',
+    'node_modules/',
+    'coverage/',
+    'packages/*/src/__tests__/codegen/keewano-events.generated.ts',
+  ],
 };

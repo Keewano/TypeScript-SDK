@@ -1,6 +1,6 @@
 {
   "name": "@keewano/react-native-expo-sdk",
-  "version": "1.1.0-179",
+  "version": "1.2.0-186",
   "description": "Expo SDK for Keewano AI Analyst (Expo-specific adapters and integrations).",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -26,8 +26,8 @@
     "postpack": "node ../../scripts/syncSiblingRanges.cjs --restore"
   },
   "dependencies": {
-    "@keewano/core": "^1.1.0-179",
-    "@keewano/react-native-sdk": "^1.1.0-179"
+    "@keewano/core": "^1.2.0-186",
+    "@keewano/react-native-sdk": "^1.2.0-186"
   },
   "peerDependencies": {
     "expo": ">=52.0.0",

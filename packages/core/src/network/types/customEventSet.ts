@@ -6,12 +6,13 @@ import type { CustomEventTypeValue } from '../../events/customEventType';
  * and payload type when the host emits the event, without inflating the
  * map.
  *
- * id - Wire event id, written by hand in the definition file and carried
- *   through unchanged, so a set may skip numbers where an event was
- *   removed. Absent only in a file generated before it was emitted;
- *   those sets were numbered by position, which is what the runtime
- *   falls back to. Resolve it through `customEventIdAt`, never off the
- *   array position.
+ * id - Wire event id as the generator assigned it: events are numbered
+ *   by their position in the definitions file, and removing one moves
+ *   every later event down, so a regenerated set never skips a number.
+ *   Absent only in a module generated before the id was emitted; those
+ *   sets were numbered by position, which is what the runtime falls
+ *   back to. Resolve it through `customEventIdAt`, never off the array
+ *   position.
  * name - Event name exactly as declared.
  * type - Payload shape; tells the runtime which dispatcher overload to
  *   call.
@@ -41,7 +42,8 @@ interface CustomEventDef {
  *   only for the binary registration protocol, which uploads
  *   `gzipData`; JSON registration builds its body from these entries
  *   and cannot register a set without them. Codegen always emits it,
- *   with exactly `eventCount` entries.
+ *   with exactly `eventCount` entries. The runtime indexes the set on
+ *   first use, so the entries must not be edited after init.
  */
 interface CustomEventSet {
   version: number;

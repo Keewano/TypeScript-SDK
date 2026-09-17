@@ -40,7 +40,12 @@ export type {
   UsdCentsPurchase,
   UsdCentsRevenue,
 } from './monetization';
-export type { CustomEventValue, ReportCustomEventArgs } from './customEvents';
+export type {
+  CustomEventValue,
+  ReportCustomEventArgs,
+  ReportCustomEventById,
+  ReportCustomEventByName,
+} from './customEvents';
 
 export {
   logError,

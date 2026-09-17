@@ -1,18 +1,20 @@
 /**
  * Runtime emission for host-declared custom events. The codegen tool
- * (`@keewano/codegen`) turns a `keewano-custom-events/` folder into a
- * `customEventSet` (passed to init) plus typed wrappers; those wrappers
- * call `reportCustomEvent` here, which resolves the event name to its
- * wire id and payload type and emits through the matching dispatcher
- * overload.
+ * (`@keewano/codegen`) turns the `keewano.events.json` definitions file
+ * into a `customEventSet` (passed to init) plus typed wrappers; those
+ * wrappers call `reportCustomEvent` here, which resolves the event, by
+ * name or wire id, to its id and payload type and emits through the
+ * matching dispatcher overload.
  */
 
-import type { CustomEventTypeValue } from '../events';
+import type { CustomEventTypeValue, ResolvedCustomEvent } from '../events';
 import type { KEventDispatcher } from '../dispatcher';
 import type { ReportCustomEventArgs } from './types/customEvents';
 
-import { CustomEventType, customEventIdAt, isCustomEventId } from '../events';
+import { CustomEventType, customEventIndexFor, isCustomEventId } from '../events';
 import { runWhenReady, truncateString } from './reportHelpers';
+
+const NEEDS_NAME_OR_ID = 'reportCustomEvent: needs a name or a numeric id';
 
 /**
  * Emit one custom event onto the dispatcher using the overload that
@@ -60,29 +62,44 @@ function emitByType(
 }
 
 /**
- * Emit a host-declared custom event. Resolves the name to its wire id
- * (`2500 + declaration index`) and payload type from the
- * `customEventSet` passed to `Keewano.init`, then emits via the
- * matching dispatcher overload. No-ops with a logged reason when init
- * received no `customEventSet` carrying `events`, or the name is not in
- * it. Usually called through the typed wrappers `@keewano/codegen`
- * generates rather than by hand.
+ * Emit a host-declared custom event. Resolves the event, by name or by
+ * wire id, to its entry in the `customEventSet` passed to `Keewano.init`
+ * (wire id and payload type), then emits via the matching dispatcher
+ * overload. No-ops with a logged reason when init received no
+ * `customEventSet` carrying `events`, or the event is not in it. Usually
+ * called through the typed wrappers `@keewano/codegen` generates rather
+ * than by hand.
  */
-function reportCustomEvent({ name, value }: ReportCustomEventArgs): void {
+function reportCustomEvent(args: ReportCustomEventArgs): void {
   runWhenReady((runtime) => {
-    const events = runtime.customEventSet?.events;
-    if (events === undefined) {
+    const set = runtime.customEventSet;
+    if (set?.events === undefined) {
       console.error('reportCustomEvent: init received no customEventSet events');
       return;
     }
-    const index = events.findIndex((event) => event.name === name);
-    if (index < 0) {
-      console.error(`reportCustomEvent: unknown event "${name}"`);
+    // A plain-JS caller can pass something that is not an object at all.
+    if (typeof args !== 'object' || args === null) {
+      console.error(NEEDS_NAME_OR_ID);
       return;
     }
-    const def = events[index];
+    const index = customEventIndexFor(set);
+    let def: ResolvedCustomEvent | undefined;
+    if (typeof args.id === 'number') {
+      def = index.byId.get(args.id);
+      if (def === undefined) {
+        console.error(`reportCustomEvent: unknown event id ${String(args.id)}`);
+      }
+    } else if (typeof args.name === 'string') {
+      def = index.byName.get(args.name);
+      if (def === undefined) {
+        console.error(`reportCustomEvent: unknown event "${args.name}"`);
+      }
+    } else {
+      console.error(NEEDS_NAME_OR_ID);
+    }
     if (def === undefined) return;
-    const eventId = customEventIdAt({ declaredId: def.id, index });
+    const { id: eventId, name, type } = def;
+    const { value } = args;
     /**
      * An id below the custom range is a built-in event's number, and
      * nothing downstream can tell the difference once the event is on
@@ -105,12 +122,17 @@ function reportCustomEvent({ name, value }: ReportCustomEventArgs): void {
      * crash.
      */
     try {
-      emitByType(runtime.dispatcher, eventId, def.type, value);
+      emitByType(runtime.dispatcher, eventId, type, value);
     } catch (error: unknown) {
       console.error(`reportCustomEvent: "${name}" payload refused; event dropped.`, error);
     }
   });
 }
 
-export type { CustomEventValue, ReportCustomEventArgs } from './types/customEvents';
+export type {
+  CustomEventValue,
+  ReportCustomEventArgs,
+  ReportCustomEventById,
+  ReportCustomEventByName,
+} from './types/customEvents';
 export { reportCustomEvent };
